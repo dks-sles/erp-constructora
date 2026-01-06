@@ -1,3894 +1,2234 @@
-import React, { useState, useEffect, createContext, useContext, useCallback } from 'react'
-import { supabase, uploadEvidence, getUserProfile, getUserProjects, EVIDENCE_BUCKET } from './supabaseClient'
+import { useState, useEffect, useCallback } from 'react';
+import { supabase, uploadEvidence, getUserProfile, getUserProjects } from './supabaseClient';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  LineChart, Line, PieChart, Pie, Cell
+} from 'recharts';
 
-// Expose supabase globally for admin functions
-window.supabase = supabase
+// ============== UTILITY FUNCTIONS ==============
+const generatePassword = () => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%';
+  return Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+};
 
-// ============================================
-// CONSTRUCTION ERP v5.0 - SUPABASE INTEGRATION
-// Full Cloud Database with Real-Time Updates
-// ============================================
+const exportToCSV = (data, filename) => {
+  if (!data || data.length === 0) return;
+  
+  const headers = Object.keys(data[0]);
+  const csvContent = [
+    headers.join(','),
+    ...data.map(row => 
+      headers.map(header => {
+        const cell = row[header] ?? '';
+        const escaped = String(cell).replace(/"/g, '""');
+        return `"${escaped}"`;
+      }).join(',')
+    )
+  ].join('\n');
 
-// ============================================
-// TOAST NOTIFICATION SYSTEM
-// ============================================
-const ToastContext = createContext(null)
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `${filename}_${new Date().toISOString().split('T')[0]}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+};
 
-function ToastProvider({ children }) {
-    const [toasts, setToasts] = useState([])
-    
-    const addToast = useCallback((message, type = 'success', duration = 4000) => {
-        const id = Date.now()
-        setToasts(prev => [...prev, { id, message, type }])
+const formatCurrency = (amount) => {
+  return new Intl.NumberFormat('es-PE', {
+    style: 'currency',
+    currency: 'PEN',
+    minimumFractionDigits: 2
+  }).format(amount || 0);
+};
+
+// ============== LOADING SPINNER COMPONENT ==============
+const Spinner = ({ size = 'md' }) => {
+  const sizeClasses = {
+    sm: 'w-4 h-4',
+    md: 'w-8 h-8',
+    lg: 'w-12 h-12'
+  };
+  return (
+    <div className={`${sizeClasses[size]} border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin`}></div>
+  );
+};
+
+const LoadingOverlay = ({ message = 'Cargando...' }) => (
+  <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+    <div className="bg-white rounded-lg p-6 flex flex-col items-center gap-4">
+      <Spinner size="lg" />
+      <p className="text-gray-700 font-medium">{message}</p>
+    </div>
+  </div>
+);
+
+// ============== MODAL COMPONENT ==============
+const Modal = ({ isOpen, onClose, title, children }) => {
+  if (!isOpen) return null;
+  
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between p-4 border-b">
+          <h3 className="text-lg font-semibold text-gray-800">{title}</h3>
+          <button
+            onClick={onClose}
+            className="p-1 hover:bg-gray-100 rounded-full transition"
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div className="p-4">{children}</div>
+      </div>
+    </div>
+  );
+};
+
+// ============== PASSWORD MODAL COMPONENT ==============
+const PasswordModal = ({ isOpen, onClose, userData }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(userData?.password || '');
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  if (!isOpen || !userData) return null;
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Usuario Creado Exitosamente">
+      <div className="space-y-4">
+        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+          <p className="text-green-800 font-medium flex items-center gap-2">
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+            </svg>
+            Usuario creado correctamente
+          </p>
+        </div>
         
-        setTimeout(() => {
-            setToasts(prev => prev.filter(t => t.id !== id))
-        }, duration)
-    }, [])
-    
-    const removeToast = useCallback((id) => {
-        setToasts(prev => prev.filter(t => t.id !== id))
-    }, [])
-    
-    return (
-        <ToastContext.Provider value={{ addToast, removeToast }}>
-            {children}
-            <ToastContainer toasts={toasts} removeToast={removeToast} />
-        </ToastContext.Provider>
-    )
-}
+        <div className="space-y-3">
+          <div>
+            <label className="block text-sm font-medium text-gray-600">Email</label>
+            <p className="text-gray-900 font-mono bg-gray-50 p-2 rounded">{userData.email}</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-600">Nombre</label>
+            <p className="text-gray-900 bg-gray-50 p-2 rounded">{userData.full_name}</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-600">Contraseña (solo se muestra una vez)</label>
+            <div className="flex gap-2">
+              <p className="flex-1 text-gray-900 font-mono bg-yellow-50 border border-yellow-300 p-2 rounded">
+                {userData.password}
+              </p>
+              <button
+                onClick={handleCopy}
+                className={`px-4 py-2 rounded font-medium transition ${
+                  copied 
+                    ? 'bg-green-500 text-white' 
+                    : 'bg-blue-500 text-white hover:bg-blue-600'
+                }`}
+              >
+                {copied ? '¡Copiado!' : 'Copiar'}
+              </button>
+            </div>
+          </div>
+        </div>
 
-function useToast() {
-    const context = useContext(ToastContext)
-    if (!context) {
-        throw new Error('useToast must be used within ToastProvider')
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mt-4">
+          <p className="text-amber-800 text-sm">
+            <strong>⚠️ Importante:</strong> Guarde esta contraseña ahora. No podrá verla nuevamente.
+          </p>
+        </div>
+
+        <button
+          onClick={onClose}
+          className="w-full mt-4 bg-gray-800 text-white py-2 rounded-lg hover:bg-gray-900 transition"
+        >
+          Entendido, Cerrar
+        </button>
+      </div>
+    </Modal>
+  );
+};
+
+// ============== ADMIN MODULE ==============
+const AdminModule = ({ currentUser }) => {
+  const [users, setUsers] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [createdUserData, setCreatedUserData] = useState(null);
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [formData, setFormData] = useState({
+    email: '',
+    full_name: '',
+    role: 'foreman',
+    assigned_projects: []
+  });
+  const [submitting, setSubmitting] = useState(false);
+
+  const roles = [
+    { value: 'admin', label: 'Administrador' },
+    { value: 'ceo', label: 'CEO' },
+    { value: 'engineer', label: 'Ingeniero' },
+    { value: 'foreman', label: 'Capataz' },
+    { value: 'logistics', label: 'Logística' }
+  ];
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [usersRes, projectsRes] = await Promise.all([
+        supabase.from('profiles').select('*, project_assignments(project_id)').order('created_at', { ascending: false }),
+        supabase.from('projects').select('*').eq('is_active', true)
+      ]);
+
+      if (usersRes.data) setUsers(usersRes.data);
+      if (projectsRes.data) setProjects(projectsRes.data);
+    } catch (error) {
+      console.error('Error fetching admin data:', error);
+    } finally {
+      setLoading(false);
     }
-    return context
-}
+  }, []);
 
-function ToastContainer({ toasts, removeToast }) {
-    return (
-        <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 max-w-sm">
-            {toasts.map(toast => (
-                <Toast key={toast.id} toast={toast} onClose={() => removeToast(toast.id)} />
-            ))}
-        </div>
-    )
-}
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
-function Toast({ toast, onClose }) {
-    const bgColor = {
-        success: 'bg-green-50 border-green-200 text-green-800',
-        error: 'bg-red-50 border-red-200 text-red-800',
-        warning: 'bg-yellow-50 border-yellow-200 text-yellow-800',
-        info: 'bg-blue-50 border-blue-200 text-blue-800'
-    }[toast.type] || 'bg-green-50 border-green-200 text-green-800'
-    
-    const icon = {
-        success: '✓',
-        error: '✕',
-        warning: '⚠',
-        info: 'ℹ'
-    }[toast.type] || '✓'
-    
-    return (
-        <div className={`${bgColor} border rounded-xl px-4 py-3 shadow-lg flex items-start gap-3 animate-slide-in`}>
-            <span className="text-lg mt-0.5">{icon}</span>
-            <p className="flex-1 text-sm font-medium">{toast.message}</p>
-            <button 
-                onClick={onClose}
-                className="text-current opacity-50 hover:opacity-100 transition-opacity"
-            >
-                ✕
-            </button>
-        </div>
-    )
-}
+  const handleCreateUser = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
 
-// App Context for Global State
-const AppContext = createContext(null)
+    try {
+      const password = generatePassword();
 
-// SUNAT Standard Units
-const SUNAT_UNITS = [
-    { code: 'UND', name: 'Unidad' },
-    { code: 'M3', name: 'Metro Cúbico' },
-    { code: 'M2', name: 'Metro Cuadrado' },
-    { code: 'ML', name: 'Metro Lineal' },
-    { code: 'KG', name: 'Kilogramo' },
-    { code: 'TN', name: 'Tonelada' },
-    { code: 'BLS', name: 'Bolsa' },
-    { code: 'GLB', name: 'Global' },
-    { code: 'GAL', name: 'Galón' },
-    { code: 'PTO', name: 'Punto' },
-    { code: 'PLZ', name: 'Pliego' },
-    { code: 'VJE', name: 'Viaje' },
-    { code: 'HH', name: 'Hora Hombre' },
-    { code: 'HM', name: 'Hora Máquina' }
-]
-
-// ============================================
-// APP PROVIDER - Global State Management
-// ============================================
-function AppProvider({ children }) {
-    const [user, setUser] = useState(null)
-    const [profile, setProfile] = useState(null)
-    const [loading, setLoading] = useState(true)
-    const [projects, setProjects] = useState([])
-    const [currentProject, setCurrentProject] = useState(null)
-    const [materials, setMaterials] = useState([])
-    const [machinery, setMachinery] = useState([])
-    const [personnelTypes, setPersonnelTypes] = useState([])
-    const [boqItems, setBoqItems] = useState([])
-    const [dailyLogs, setDailyLogs] = useState([])
-    const [requisitions, setRequisitions] = useState([])
-    const [settings, setSettings] = useState({
-        companyName: 'Construction ERP',
-        logoUrl: '',
-        currency: 'PEN',
-        taxRate: 18
-    })
-    const [error, setError] = useState(null)
-    const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-
-    // Check auth state on mount
-    useEffect(() => {
-        supabase.auth.getSession().then(({ data: { session } }) => {
-            if (session?.user) {
-                handleAuthUser(session.user)
-            } else {
-                setLoading(false)
-            }
-        })
-
-        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-            if (session?.user) {
-                handleAuthUser(session.user)
-            } else {
-                setUser(null)
-                setProfile(null)
-                setProjects([])
-                setLoading(false)
-            }
-        })
-
-        return () => subscription.unsubscribe()
-    }, [])
-
-    // Handle authenticated user
-    const handleAuthUser = async (authUser) => {
-        try {
-            setLoading(true)
-            const userProfile = await getUserProfile(authUser.id)
-            setUser(authUser)
-            setProfile(userProfile)
-            
-            // Load user's projects
-            const userProjects = await getUserProjects(authUser.id, userProfile.role)
-            setProjects(userProjects)
-            
-            // Load materials catalog
-            await loadMaterialsCatalog()
-            
-            // Load machinery catalog
-            await loadMachineryCatalog()
-            
-            // Load personnel types
-            await loadPersonnelTypes()
-            
-            // Load company settings
-            await loadCompanySettings()
-            
-        } catch (err) {
-            console.error('Error loading user data:', err)
-            setError(err.message)
-        } finally {
-            setLoading(false)
+      // 1. Create auth user
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: formData.email,
+        password: password,
+        options: {
+          data: {
+            full_name: formData.full_name,
+            role: formData.role
+          }
         }
-    }
+      });
 
-    // Load materials catalog
-    const loadMaterialsCatalog = async () => {
-        const { data, error } = await supabase
+      if (authError) throw authError;
+
+      const userId = authData.user.id;
+
+      // 2. Insert into profiles
+      const { error: profileError } = await supabase.from('profiles').insert({
+        id: userId,
+        email: formData.email,
+        full_name: formData.full_name,
+        role: formData.role,
+        is_active: true
+      });
+
+      if (profileError) throw profileError;
+
+      // 3. Insert project assignments
+      if (formData.assigned_projects.length > 0) {
+        const assignments = formData.assigned_projects.map(projectId => ({
+          user_id: userId,
+          project_id: projectId
+        }));
+
+        const { error: assignError } = await supabase.from('project_assignments').insert(assignments);
+        if (assignError) throw assignError;
+      }
+
+      // 4. Show password modal
+      setCreatedUserData({
+        email: formData.email,
+        full_name: formData.full_name,
+        password: password
+      });
+      setShowCreateModal(false);
+      setShowPasswordModal(true);
+      
+      // Reset form
+      setFormData({
+        email: '',
+        full_name: '',
+        role: 'foreman',
+        assigned_projects: []
+      });
+      
+      fetchData();
+    } catch (error) {
+      console.error('Error creating user:', error);
+      alert('Error al crear usuario: ' + error.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleEditUser = async (e) => {
+    e.preventDefault();
+    if (!selectedUser) return;
+    setSubmitting(true);
+
+    try {
+      // 1. Update profile
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .update({
+          full_name: formData.full_name,
+          role: formData.role
+        })
+        .eq('id', selectedUser.id);
+
+      if (profileError) throw profileError;
+
+      // 2. Delete old assignments
+      const { error: deleteError } = await supabase
+        .from('project_assignments')
+        .delete()
+        .eq('user_id', selectedUser.id);
+
+      if (deleteError) throw deleteError;
+
+      // 3. Insert new assignments
+      if (formData.assigned_projects.length > 0) {
+        const assignments = formData.assigned_projects.map(projectId => ({
+          user_id: selectedUser.id,
+          project_id: projectId
+        }));
+
+        const { error: assignError } = await supabase.from('project_assignments').insert(assignments);
+        if (assignError) throw assignError;
+      }
+
+      setShowEditModal(false);
+      setSelectedUser(null);
+      fetchData();
+      alert('Usuario actualizado correctamente');
+    } catch (error) {
+      console.error('Error updating user:', error);
+      alert('Error al actualizar usuario: ' + error.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSoftDelete = async (userId) => {
+    if (!confirm('¿Está seguro de desactivar este usuario?')) return;
+
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ is_active: false })
+        .eq('id', userId);
+
+      if (error) throw error;
+      fetchData();
+    } catch (error) {
+      console.error('Error deactivating user:', error);
+      alert('Error al desactivar usuario: ' + error.message);
+    }
+  };
+
+  const openEditModal = (user) => {
+    setSelectedUser(user);
+    setFormData({
+      email: user.email,
+      full_name: user.full_name,
+      role: user.role,
+      assigned_projects: user.project_assignments?.map(pa => pa.project_id) || []
+    });
+    setShowEditModal(true);
+  };
+
+  const handleProjectToggle = (projectId) => {
+    setFormData(prev => ({
+      ...prev,
+      assigned_projects: prev.assigned_projects.includes(projectId)
+        ? prev.assigned_projects.filter(id => id !== projectId)
+        : [...prev.assigned_projects, projectId]
+    }));
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Spinner size="lg" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <h2 className="text-2xl font-bold text-gray-800">Gestión de Usuarios</h2>
+        <button
+          onClick={() => {
+            setFormData({ email: '', full_name: '', role: 'foreman', assigned_projects: [] });
+            setShowCreateModal(true);
+          }}
+          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition flex items-center gap-2"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+          Nuevo Usuario
+        </button>
+      </div>
+
+      {/* Users Table */}
+      <div className="bg-white rounded-xl shadow overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Usuario</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rol</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Proyectos</th>
+                <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Acciones</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {users.map(user => (
+                <tr key={user.id} className={!user.is_active ? 'bg-gray-50 opacity-60' : ''}>
+                  <td className="px-4 py-4">
+                    <div>
+                      <p className="font-medium text-gray-900">{user.full_name}</p>
+                      <p className="text-sm text-gray-500">{user.email}</p>
+                    </div>
+                  </td>
+                  <td className="px-4 py-4">
+                    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                      user.role === 'admin' ? 'bg-purple-100 text-purple-800' :
+                      user.role === 'ceo' ? 'bg-blue-100 text-blue-800' :
+                      user.role === 'engineer' ? 'bg-green-100 text-green-800' :
+                      user.role === 'foreman' ? 'bg-yellow-100 text-yellow-800' :
+                      'bg-gray-100 text-gray-800'
+                    }`}>
+                      {roles.find(r => r.value === user.role)?.label || user.role}
+                    </span>
+                  </td>
+                  <td className="px-4 py-4">
+                    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                      user.is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                    }`}>
+                      {user.is_active ? 'Activo' : 'Inactivo'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-4">
+                    <span className="text-sm text-gray-600">
+                      {user.project_assignments?.length || 0} proyecto(s)
+                    </span>
+                  </td>
+                  <td className="px-4 py-4 text-right space-x-2">
+                    <button
+                      onClick={() => openEditModal(user)}
+                      className="text-blue-600 hover:text-blue-800 font-medium text-sm"
+                    >
+                      Editar
+                    </button>
+                    {user.is_active && user.id !== currentUser?.id && (
+                      <button
+                        onClick={() => handleSoftDelete(user.id)}
+                        className="text-red-600 hover:text-red-800 font-medium text-sm"
+                      >
+                        Eliminar
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Create User Modal */}
+      <Modal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} title="Crear Nuevo Usuario">
+        <form onSubmit={handleCreateUser} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+            <input
+              type="email"
+              required
+              value={formData.email}
+              onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="usuario@empresa.com"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Nombre Completo</label>
+            <input
+              type="text"
+              required
+              value={formData.full_name}
+              onChange={(e) => setFormData(prev => ({ ...prev, full_name: e.target.value }))}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="Juan Pérez"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Rol</label>
+            <select
+              value={formData.role}
+              onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value }))}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              {roles.map(role => (
+                <option key={role.value} value={role.value}>{role.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Proyectos Asignados</label>
+            <div className="max-h-40 overflow-y-auto border border-gray-200 rounded-lg p-2 space-y-2">
+              {projects.map(project => (
+                <label key={project.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-1 rounded">
+                  <input
+                    type="checkbox"
+                    checked={formData.assigned_projects.includes(project.id)}
+                    onChange={() => handleProjectToggle(project.id)}
+                    className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-700">{project.name}</span>
+                </label>
+              ))}
+              {projects.length === 0 && (
+                <p className="text-sm text-gray-500 text-center py-2">No hay proyectos disponibles</p>
+              )}
+            </div>
+          </div>
+          <div className="flex gap-3 pt-4">
+            <button
+              type="button"
+              onClick={() => setShowCreateModal(false)}
+              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {submitting && <Spinner size="sm" />}
+              {submitting ? 'Creando...' : 'Crear Usuario'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Edit User Modal */}
+      <Modal isOpen={showEditModal} onClose={() => setShowEditModal(false)} title="Editar Usuario">
+        <form onSubmit={handleEditUser} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+            <input
+              type="email"
+              disabled
+              value={formData.email}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-gray-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Nombre Completo</label>
+            <input
+              type="text"
+              required
+              value={formData.full_name}
+              onChange={(e) => setFormData(prev => ({ ...prev, full_name: e.target.value }))}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Rol</label>
+            <select
+              value={formData.role}
+              onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value }))}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              {roles.map(role => (
+                <option key={role.value} value={role.value}>{role.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Proyectos Asignados</label>
+            <div className="max-h-40 overflow-y-auto border border-gray-200 rounded-lg p-2 space-y-2">
+              {projects.map(project => (
+                <label key={project.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-1 rounded">
+                  <input
+                    type="checkbox"
+                    checked={formData.assigned_projects.includes(project.id)}
+                    onChange={() => handleProjectToggle(project.id)}
+                    className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-700">{project.name}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="flex gap-3 pt-4">
+            <button
+              type="button"
+              onClick={() => setShowEditModal(false)}
+              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {submitting && <Spinner size="sm" />}
+              {submitting ? 'Guardando...' : 'Guardar Cambios'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Password Modal */}
+      <PasswordModal
+        isOpen={showPasswordModal}
+        onClose={() => {
+          setShowPasswordModal(false);
+          setCreatedUserData(null);
+        }}
+        userData={createdUserData}
+      />
+    </div>
+  );
+};
+
+// ============== FOREMAN MODULE ==============
+const ForemanModule = ({ project, currentUser }) => {
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [partidas, setPartidas] = useState([]);
+  const [materials, setMaterials] = useState([]);
+  const [selectedPartida, setSelectedPartida] = useState(null);
+  const [laborRows, setLaborRows] = useState([{ worker_type: 'peon', hours: '' }]);
+  const [materialRows, setMaterialRows] = useState([{ material_id: '', quantity: '' }]);
+  const [photos, setPhotos] = useState([]);
+  const [uploadingPhotos, setUploadingPhotos] = useState(false);
+  const [notes, setNotes] = useState('');
+  const [progressInput, setProgressInput] = useState('');
+  const [validationError, setValidationError] = useState('');
+
+  const workerTypes = [
+    { value: 'peon', label: 'Peón', rate: 80 },
+    { value: 'oficial', label: 'Oficial', rate: 120 },
+    { value: 'operario', label: 'Operario', rate: 150 },
+    { value: 'capataz', label: 'Capataz', rate: 200 }
+  ];
+
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!project?.id) return;
+      setLoading(true);
+
+      try {
+        const [partidasRes, materialsRes] = await Promise.all([
+          supabase
+            .from('partidas')
+            .select('*')
+            .eq('project_id', project.id)
+            .order('code'),
+          supabase
             .from('materials_catalog')
             .select('*')
             .eq('is_active', true)
             .order('name')
-        
-        if (error) throw error
-        setMaterials(data || [])
-    }
+        ]);
 
-    // Load machinery catalog
-    const loadMachineryCatalog = async () => {
-        const { data, error } = await supabase
-            .from('machinery_catalog')
-            .select('*')
-            .eq('is_active', true)
-            .order('name')
-        
-        if (error) throw error
-        setMachinery(data || [])
-    }
+        if (partidasRes.data) setPartidas(partidasRes.data);
+        if (materialsRes.data) setMaterials(materialsRes.data);
+      } catch (error) {
+        console.error('Error fetching foreman data:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
 
-    // Load personnel types
-    const loadPersonnelTypes = async () => {
-        const { data, error } = await supabase
-            .from('personnel_types')
-            .select('*')
-            .eq('is_active', true)
-            .order('name')
-        
-        if (error) throw error
-        setPersonnelTypes(data || [])
-    }
+    fetchData();
+  }, [project?.id]);
 
-    // Load company settings
-    const loadCompanySettings = async () => {
-        const { data, error } = await supabase
-            .from('companies')
-            .select('*')
-            .limit(1)
-            .single()
-        
-        if (!error && data) {
-            setSettings({
-                companyName: data.name,
-                logoUrl: data.logo_url || '',
-                currency: data.currency || 'PEN',
-                taxRate: data.tax_rate || 18
-            })
+  const addLaborRow = () => {
+    setLaborRows(prev => [...prev, { worker_type: 'peon', hours: '' }]);
+  };
+
+  const removeLaborRow = (index) => {
+    if (laborRows.length > 1) {
+      setLaborRows(prev => prev.filter((_, i) => i !== index));
+    }
+  };
+
+  const updateLaborRow = (index, field, value) => {
+    setLaborRows(prev => prev.map((row, i) => 
+      i === index ? { ...row, [field]: value } : row
+    ));
+  };
+
+  const addMaterialRow = () => {
+    setMaterialRows(prev => [...prev, { material_id: '', quantity: '' }]);
+  };
+
+  const removeMaterialRow = (index) => {
+    if (materialRows.length > 1) {
+      setMaterialRows(prev => prev.filter((_, i) => i !== index));
+    }
+  };
+
+  const updateMaterialRow = (index, field, value) => {
+    setMaterialRows(prev => prev.map((row, i) => 
+      i === index ? { ...row, [field]: value } : row
+    ));
+  };
+
+  const handlePhotoUpload = async (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+
+    setUploadingPhotos(true);
+    const uploadedPhotos = [];
+
+    try {
+      for (const file of files) {
+        const url = await uploadEvidence(file, project.id, 'daily-reports');
+        if (url) {
+          uploadedPhotos.push({
+            url,
+            name: file.name,
+            uploaded_at: new Date().toISOString()
+          });
         }
+      }
+      setPhotos(prev => [...prev, ...uploadedPhotos]);
+    } catch (error) {
+      console.error('Error uploading photos:', error);
+      alert('Error al subir algunas fotos');
+    } finally {
+      setUploadingPhotos(false);
+    }
+  };
+
+  const removePhoto = (index) => {
+    setPhotos(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const validateSubmission = () => {
+    if (!selectedPartida) {
+      setValidationError('Debe seleccionar una partida');
+      return false;
     }
 
-    // Load project-specific data
-    const loadProjectData = async (projectId) => {
-        try {
-            setLoading(true)
-            
-            // Load BOQ items
-            const { data: boq, error: boqError } = await supabase
-                .from('boq_items')
-                .select('*')
-                .eq('project_id', projectId)
-                .order('sort_order')
-            
-            if (boqError) throw boqError
-            setBoqItems(boq || [])
-            
-            // Load daily logs
-            const { data: logs, error: logsError } = await supabase
-                .from('daily_logs')
-                .select(`
-                    *,
-                    foreman:profiles!foreman_id(full_name, avatar_url),
-                    boq_item:boq_items(code, description, unit)
-                `)
-                .eq('project_id', projectId)
-                .order('log_date', { ascending: false })
-            
-            if (logsError) throw logsError
-            setDailyLogs(logs || [])
-            
-            // Load requisitions
-            const { data: reqs, error: reqsError } = await supabase
-                .from('requisitions')
-                .select(`
-                    *,
-                    requester:profiles!requested_by(full_name),
-                    approver:profiles!approved_by(full_name),
-                    purchaser:profiles!purchased_by(full_name)
-                `)
-                .eq('project_id', projectId)
-                .order('requested_at', { ascending: false })
-            
-            if (reqsError) throw reqsError
-            setRequisitions(reqs || [])
-            
-        } catch (err) {
-            console.error('Error loading project data:', err)
-            setError(err.message)
-        } finally {
-            setLoading(false)
-        }
+    const progress = parseFloat(progressInput) || 0;
+    const currentProgress = selectedPartida.current_progress || 0;
+    const totalBudgeted = selectedPartida.total_budgeted || 0;
+
+    if (currentProgress + progress > totalBudgeted) {
+      setValidationError(
+        `El avance excede el presupuesto. Actual: ${currentProgress}, Ingresado: ${progress}, Máximo permitido: ${totalBudgeted - currentProgress}`
+      );
+      return false;
     }
 
-    // Select a project and load its data
-    const selectProject = async (project) => {
-        setCurrentProject(project)
-        if (project) {
-            await loadProjectData(project.id)
-            setupRealtimeSubscriptions(project.id)
-        }
+    const validLabor = laborRows.some(row => row.hours && parseFloat(row.hours) > 0);
+    if (!validLabor) {
+      setValidationError('Debe ingresar al menos una fila de mano de obra con horas válidas');
+      return false;
     }
 
-    // Setup real-time subscriptions for a project
-    const setupRealtimeSubscriptions = (projectId) => {
-        // Subscribe to daily_logs changes
-        const logsChannel = supabase
-            .channel(`logs-${projectId}`)
-            .on('postgres_changes', 
-                { event: '*', schema: 'public', table: 'daily_logs', filter: `project_id=eq.${projectId}` },
-                (payload) => {
-                    if (payload.eventType === 'INSERT') {
-                        setDailyLogs(prev => [payload.new, ...prev])
-                    } else if (payload.eventType === 'UPDATE') {
-                        setDailyLogs(prev => prev.map(l => l.id === payload.new.id ? payload.new : l))
-                    } else if (payload.eventType === 'DELETE') {
-                        setDailyLogs(prev => prev.filter(l => l.id !== payload.old.id))
-                    }
-                }
-            )
-            .subscribe()
+    setValidationError('');
+    return true;
+  };
 
-        // Subscribe to requisitions changes
-        const reqsChannel = supabase
-            .channel(`reqs-${projectId}`)
-            .on('postgres_changes',
-                { event: '*', schema: 'public', table: 'requisitions', filter: `project_id=eq.${projectId}` },
-                (payload) => {
-                    if (payload.eventType === 'INSERT') {
-                        setRequisitions(prev => [payload.new, ...prev])
-                    } else if (payload.eventType === 'UPDATE') {
-                        setRequisitions(prev => prev.map(r => r.id === payload.new.id ? payload.new : r))
-                    }
-                }
-            )
-            .subscribe()
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!validateSubmission()) return;
 
-        // Subscribe to BOQ changes
-        const boqChannel = supabase
-            .channel(`boq-${projectId}`)
-            .on('postgres_changes',
-                { event: '*', schema: 'public', table: 'boq_items', filter: `project_id=eq.${projectId}` },
-                (payload) => {
-                    if (payload.eventType === 'INSERT') {
-                        setBoqItems(prev => [...prev, payload.new])
-                    } else if (payload.eventType === 'UPDATE') {
-                        setBoqItems(prev => prev.map(b => b.id === payload.new.id ? payload.new : b))
-                    }
-                }
-            )
-            .subscribe()
+    setSubmitting(true);
 
-        return () => {
-            supabase.removeChannel(logsChannel)
-            supabase.removeChannel(reqsChannel)
-            supabase.removeChannel(boqChannel)
-        }
-    }
+    try {
+      // Calculate labor costs
+      const laborData = laborRows
+        .filter(row => row.hours && parseFloat(row.hours) > 0)
+        .map(row => {
+          const workerType = workerTypes.find(wt => wt.value === row.worker_type);
+          return {
+            worker_type: row.worker_type,
+            hours: parseFloat(row.hours),
+            rate: workerType?.rate || 0,
+            cost: parseFloat(row.hours) * (workerType?.rate || 0)
+          };
+        });
 
-    // Sign in with email/password
-    const signIn = async (email, password) => {
-        setLoading(true)
-        setError(null)
-        
-        const { data, error } = await supabase.auth.signInWithPassword({
-            email,
-            password
+      // Prepare materials data
+      const materialsData = materialRows
+        .filter(row => row.material_id && row.quantity && parseFloat(row.quantity) > 0)
+        .map(row => {
+          const material = materials.find(m => m.id === row.material_id);
+          return {
+            material_id: row.material_id,
+            material_name: material?.name || '',
+            quantity: parseFloat(row.quantity),
+            unit: material?.unit || '',
+            unit_cost: material?.unit_cost || 0,
+            total_cost: parseFloat(row.quantity) * (material?.unit_cost || 0)
+          };
+        });
+
+      // Create daily report
+      const { data: reportData, error: reportError } = await supabase
+        .from('daily_reports')
+        .insert({
+          project_id: project.id,
+          partida_id: selectedPartida.id,
+          user_id: currentUser.id,
+          report_date: new Date().toISOString().split('T')[0],
+          progress_value: parseFloat(progressInput) || 0,
+          labor_data: laborData,
+          materials_data: materialsData,
+          photos: photos,
+          notes: notes,
+          total_labor_cost: laborData.reduce((sum, l) => sum + l.cost, 0),
+          total_materials_cost: materialsData.reduce((sum, m) => sum + m.total_cost, 0)
         })
-        
-        if (error) {
-            setError(error.message)
-            setLoading(false)
-            return false
-        }
-        
-        // Check if user is active
-        if (data.user) {
-            const { data: profileData, error: profileError } = await supabase
-                .from('profiles')
-                .select('is_active')
-                .eq('id', data.user.id)
-                .single()
-            
-            if (profileError || profileData?.is_active === false) {
-                await supabase.auth.signOut()
-                setError('Usuario desactivado. Contacte al administrador.')
-                setLoading(false)
-                return false
-            }
-        }
-        
-        return true
+        .select()
+        .single();
+
+      if (reportError) throw reportError;
+
+      // Update partida progress
+      const newProgress = (selectedPartida.current_progress || 0) + (parseFloat(progressInput) || 0);
+      const { error: updateError } = await supabase
+        .from('partidas')
+        .update({ current_progress: newProgress })
+        .eq('id', selectedPartida.id);
+
+      if (updateError) throw updateError;
+
+      // Reset form
+      setSelectedPartida(null);
+      setLaborRows([{ worker_type: 'peon', hours: '' }]);
+      setMaterialRows([{ material_id: '', quantity: '' }]);
+      setPhotos([]);
+      setNotes('');
+      setProgressInput('');
+      
+      alert('Reporte diario guardado exitosamente');
+      
+      // Refresh partidas
+      const { data: refreshedPartidas } = await supabase
+        .from('partidas')
+        .select('*')
+        .eq('project_id', project.id)
+        .order('code');
+      
+      if (refreshedPartidas) setPartidas(refreshedPartidas);
+
+    } catch (error) {
+      console.error('Error submitting report:', error);
+      alert('Error al guardar el reporte: ' + error.message);
+    } finally {
+      setSubmitting(false);
     }
+  };
 
-    // Sign out
-    const signOut = async () => {
-        await supabase.auth.signOut()
-        setUser(null)
-        setProfile(null)
-        setProjects([])
-        setCurrentProject(null)
-        setBoqItems([])
-        setDailyLogs([])
-        setRequisitions([])
-    }
-
-    // Create daily log
-    const createDailyLog = async (logData, evidenceFile) => {
-        try {
-            setLoading(true)
-            
-            let evidenceUrl = null
-            if (evidenceFile) {
-                evidenceUrl = await uploadEvidence(evidenceFile, `daily-logs/${currentProject.id}`)
-            }
-            
-            const { data, error } = await supabase
-                .from('daily_logs')
-                .insert({
-                    project_id: currentProject.id,
-                    boq_item_id: logData.boqItemId,
-                    foreman_id: user.id,
-                    log_date: logData.date,
-                    quantity_executed: logData.quantityExecuted,
-                    labor_json: logData.labor,
-                    materials_json: logData.materials,
-                    machinery_json: logData.machinery,
-                    evidence_urls: evidenceUrl ? [evidenceUrl] : [],
-                    notes: logData.notes,
-                    status: 'pending'
-                })
-                .select()
-                .single()
-            
-            if (error) throw error
-            
-            return data
-        } catch (err) {
-            setError(err.message)
-            throw err
-        } finally {
-            setLoading(false)
-        }
-    }
-
-    // Approve/Reject daily log
-    const updateLogStatus = async (logId, status, rejectionReason = null) => {
-        const { error } = await supabase
-            .from('daily_logs')
-            .update({
-                status,
-                reviewed_by: user.id,
-                reviewed_at: new Date().toISOString(),
-                rejection_reason: rejectionReason
-            })
-            .eq('id', logId)
-        
-        if (error) throw error
-    }
-
-    // Create requisition
-    const createRequisition = async (reqData) => {
-        const { data, error } = await supabase
-            .from('requisitions')
-            .insert({
-                project_id: currentProject.id,
-                material_id: reqData.materialId,
-                item_name: reqData.itemName,
-                item_description: reqData.description,
-                quantity: reqData.quantity,
-                unit: reqData.unit,
-                urgency: reqData.urgency,
-                requested_by: user.id,
-                request_notes: reqData.notes,
-                status: 'pending_pm'
-            })
-            .select()
-            .single()
-        
-        if (error) throw error
-        return data
-    }
-
-    // Update requisition status
-    const updateRequisitionStatus = async (reqId, status, additionalData = {}) => {
-        const updateData = { status, ...additionalData }
-        
-        if (status === 'approved' || status === 'to_buy') {
-            updateData.approved_by = user.id
-            updateData.approved_at = new Date().toISOString()
-        } else if (status === 'in_transit') {
-            updateData.purchased_by = user.id
-            updateData.purchased_at = new Date().toISOString()
-        } else if (status === 'received' || status === 'completed') {
-            updateData.received_by = user.id
-            updateData.received_at = new Date().toISOString()
-        }
-        
-        const { error } = await supabase
-            .from('requisitions')
-            .update(updateData)
-            .eq('id', reqId)
-        
-        if (error) throw error
-    }
-
-    // Create BOQ item
-    const createBoqItem = async (itemData) => {
-        const { data, error } = await supabase
-            .from('boq_items')
-            .insert({
-                project_id: currentProject.id,
-                code: itemData.code,
-                description: itemData.description,
-                unit: itemData.unit,
-                category: itemData.category,
-                total_metrado: itemData.totalMetrado,
-                unit_price: itemData.unitPrice,
-                created_by: user.id
-            })
-            .select()
-            .single()
-        
-        if (error) throw error
-        return data
-    }
-
-    // Update BOQ item
-    const updateBoqItem = async (itemId, updates) => {
-        const { error } = await supabase
-            .from('boq_items')
-            .update(updates)
-            .eq('id', itemId)
-        
-        if (error) throw error
-    }
-
-    // Refresh projects list
-    const refreshProjects = async () => {
-        if (profile) {
-            const userProjects = await getUserProjects(user.id, profile.role)
-            setProjects(userProjects)
-        }
-    }
-
-    const value = {
-        // Auth state
-        user,
-        profile,
-        loading,
-        error,
-        
-        // Data
-        projects,
-        currentProject,
-        materials,
-        machinery,
-        personnelTypes,
-        boqItems,
-        dailyLogs,
-        requisitions,
-        settings,
-        
-        // UI state
-        mobileMenuOpen,
-        setMobileMenuOpen,
-        
-        // Actions
-        signIn,
-        signOut,
-        selectProject,
-        createDailyLog,
-        updateLogStatus,
-        createRequisition,
-        updateRequisitionStatus,
-        createBoqItem,
-        updateBoqItem,
-        refreshProjects,
-        loadProjectData,
-        setError
-    }
-
-    return <AppContext.Provider value={value}>{children}</AppContext.Provider>
-}
-
-// Custom hook to use app context
-function useApp() {
-    const context = useContext(AppContext)
-    if (!context) {
-        throw new Error('useApp must be used within AppProvider')
-    }
-    return context
-}
-
-// ============================================
-// UTILITY FUNCTIONS
-// ============================================
-function formatCurrency(amount, currency = 'PEN') {
-    return new Intl.NumberFormat('es-PE', {
-        style: 'currency',
-        currency,
-        minimumFractionDigits: 0,
-        maximumFractionDigits: 0
-    }).format(amount)
-}
-
-function formatDate(date) {
-    return new Date(date).toLocaleDateString('es-PE')
-}
-
-function getRoleName(role) {
-    const roles = {
-        admin: 'Administrador',
-        ceo: 'CEO',
-        pm: 'Project Manager',
-        engineer: 'Ing. Residente',
-        foreman: 'Maestro de Obra',
-        logistics: 'Logística'
-    }
-    return roles[role] || role
-}
-
-function getRoleColor(role) {
-    const colors = {
-        admin: 'bg-purple-100 text-purple-700',
-        ceo: 'bg-blue-100 text-blue-700',
-        pm: 'bg-indigo-100 text-indigo-700',
-        engineer: 'bg-green-100 text-green-700',
-        foreman: 'bg-orange-100 text-orange-700',
-        logistics: 'bg-teal-100 text-teal-700'
-    }
-    return colors[role] || 'bg-gray-100 text-gray-700'
-}
-
-function getStatusBadge(status) {
-    const badges = {
-        pending: { bg: 'bg-yellow-100', text: 'text-yellow-700', icon: '🕒', label: 'Pendiente' },
-        approved: { bg: 'bg-green-100', text: 'text-green-700', icon: '✅', label: 'Aprobado' },
-        rejected: { bg: 'bg-red-100', text: 'text-red-700', icon: '❌', label: 'Rechazado' },
-        pending_pm: { bg: 'bg-yellow-100', text: 'text-yellow-700', icon: '🕒', label: 'Pendiente PM' },
-        to_buy: { bg: 'bg-blue-100', text: 'text-blue-700', icon: '🛒', label: 'Por Comprar' },
-        in_transit: { bg: 'bg-orange-100', text: 'text-orange-700', icon: '🚚', label: 'En Tránsito' },
-        received: { bg: 'bg-green-100', text: 'text-green-700', icon: '📦', label: 'Recibido' },
-        completed: { bg: 'bg-green-100', text: 'text-green-700', icon: '✅', label: 'Completado' }
-    }
-    const badge = badges[status] || badges.pending
+  if (loading) {
     return (
-        <span className={`px-2 py-1 text-xs font-medium rounded-full ${badge.bg} ${badge.text}`}>
-            {badge.icon} {badge.label}
-        </span>
-    )
-}
+      <div className="flex items-center justify-center h-64">
+        <Spinner size="lg" />
+      </div>
+    );
+  }
 
-function getUrgencyBadge(urgency) {
-    const badges = {
-        low: { bg: 'bg-green-100', text: 'text-green-700', label: '🟢 Baja' },
-        medium: { bg: 'bg-yellow-100', text: 'text-yellow-700', label: '🟡 Media' },
-        high: { bg: 'bg-red-100', text: 'text-red-700', label: '🔴 Alta' },
-        critical: { bg: 'bg-red-200', text: 'text-red-800', label: '⚠️ Crítica' }
-    }
-    const badge = badges[urgency] || badges.medium
-    return (
-        <span className={`px-2 py-1 text-xs font-medium rounded-full ${badge.bg} ${badge.text}`}>
-            {badge.label}
-        </span>
-    )
-}
+  return (
+    <div className="space-y-6">
+      <h2 className="text-2xl font-bold text-gray-800">Reporte Diario de Avance</h2>
 
-// ============================================
-// LOADING SPINNER COMPONENT
-// ============================================
-function LoadingSpinner({ message = 'Cargando...' }) {
-    return (
-        <div className="flex flex-col items-center justify-center py-12">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
-            <p className="text-slate-500">{message}</p>
-        </div>
-    )
-}
-
-// ============================================
-// ERROR ALERT COMPONENT
-// ============================================
-function ErrorAlert({ message, onClose }) {
-    if (!message) return null
-    
-    return (
-        <div className="fixed top-4 right-4 z-50 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg shadow-lg flex items-center gap-3">
-            <span>⚠️</span>
-            <span>{message}</span>
-            <button onClick={onClose} className="ml-4 text-red-500 hover:text-red-700">✕</button>
-        </div>
-    )
-}
-
-// ============================================
-// LOGIN PAGE
-// ============================================
-function LoginPage() {
-    const { signIn, loading, error, settings, setError } = useApp()
-    const [email, setEmail] = useState('')
-    const [password, setPassword] = useState('')
-
-    const handleSubmit = async (e) => {
-        e.preventDefault()
-        await signIn(email, password)
-    }
-
-    return (
-        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-900 flex items-center justify-center p-4">
-            <ErrorAlert message={error} onClose={() => setError(null)} />
-            
-            <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
-                <div className="text-center mb-8">
-                    <div className="w-20 h-20 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
-                        {settings.logoUrl ? (
-                            <img src={settings.logoUrl} alt="Logo" className="h-12 w-12 object-contain" />
-                        ) : (
-                            <span className="text-4xl">🏗️</span>
-                        )}
-                    </div>
-                    <h1 className="text-3xl font-bold text-slate-800">{settings.companyName}</h1>
-                    <p className="text-slate-500 mt-2">Sistema de Gestión ERP v5.0</p>
-                </div>
-                
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">
-                            Correo Electrónico
-                        </label>
-                        <input
-                            type="email"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                            required
-                            className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50"
-                            placeholder="correo@empresa.com"
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">
-                            Contraseña
-                        </label>
-                        <input
-                            type="password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            required
-                            className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50"
-                            placeholder="••••••••"
-                        />
-                    </div>
-                    <button
-                        type="submit"
-                        disabled={loading}
-                        className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-3 rounded-xl font-semibold hover:from-blue-700 hover:to-indigo-700 transition-all shadow-lg disabled:opacity-50"
-                    >
-                        {loading ? 'Iniciando sesión...' : 'Iniciar Sesión'}
-                    </button>
-                </form>
+      <form onSubmit={handleSubmit} className="space-y-6">
+        {/* Partida Selection */}
+        <div className="bg-white rounded-xl shadow p-6">
+          <h3 className="text-lg font-semibold text-gray-800 mb-4">Seleccionar Partida</h3>
+          <select
+            value={selectedPartida?.id || ''}
+            onChange={(e) => {
+              const partida = partidas.find(p => p.id === e.target.value);
+              setSelectedPartida(partida);
+              setValidationError('');
+            }}
+            className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          >
+            <option value="">-- Seleccione una partida --</option>
+            {partidas.map(partida => (
+              <option key={partida.id} value={partida.id}>
+                {partida.code} - {partida.name} (Avance: {partida.current_progress || 0}/{partida.total_budgeted || 0} {partida.unit})
+              </option>
+            ))}
+          </select>
+          
+          {selectedPartida && (
+            <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-blue-50 p-3 rounded-lg">
+                <p className="text-xs text-blue-600 font-medium">Unidad</p>
+                <p className="text-lg font-bold text-blue-800">{selectedPartida.unit}</p>
+              </div>
+              <div className="bg-green-50 p-3 rounded-lg">
+                <p className="text-xs text-green-600 font-medium">Presupuestado</p>
+                <p className="text-lg font-bold text-green-800">{selectedPartida.total_budgeted || 0}</p>
+              </div>
+              <div className="bg-yellow-50 p-3 rounded-lg">
+                <p className="text-xs text-yellow-600 font-medium">Avance Actual</p>
+                <p className="text-lg font-bold text-yellow-800">{selectedPartida.current_progress || 0}</p>
+              </div>
+              <div className="bg-purple-50 p-3 rounded-lg">
+                <p className="text-xs text-purple-600 font-medium">Disponible</p>
+                <p className="text-lg font-bold text-purple-800">
+                  {(selectedPartida.total_budgeted || 0) - (selectedPartida.current_progress || 0)}
+                </p>
+              </div>
             </div>
+          )}
         </div>
-    )
-}
 
-// ============================================
-// SIDEBAR COMPONENT
-// ============================================
-function Sidebar({ menuItems }) {
-    const { profile, signOut, settings, mobileMenuOpen, setMobileMenuOpen } = useApp()
+        {/* Progress Input */}
+        <div className="bg-white rounded-xl shadow p-6">
+          <h3 className="text-lg font-semibold text-gray-800 mb-4">Avance del Día</h3>
+          <div className="flex gap-4 items-end">
+            <div className="flex-1">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Cantidad Ejecutada ({selectedPartida?.unit || 'unidad'})
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={progressInput}
+                onChange={(e) => {
+                  setProgressInput(e.target.value);
+                  setValidationError('');
+                }}
+                className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="0.00"
+              />
+            </div>
+          </div>
+        </div>
 
-    if (!profile) return null
-
-    return (
-        <>
-            {/* Mobile Overlay */}
-            {mobileMenuOpen && (
-                <div 
-                    className="fixed inset-0 bg-black/50 z-40 lg:hidden"
-                    onClick={() => setMobileMenuOpen(false)}
-                />
-            )}
-            
-            {/* Sidebar */}
-            <aside className={`
-                fixed left-0 top-0 h-full bg-slate-900 text-white z-50 w-64
-                transform transition-transform duration-300 ease-in-out
-                ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
-                lg:translate-x-0
-            `}>
-                <div className="p-5 border-b border-slate-700">
-                    <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                            {settings.logoUrl ? (
-                                <img src={settings.logoUrl} alt="Logo" className="h-10 w-10 object-contain rounded-lg" />
-                            ) : (
-                                <span className="text-3xl">🏗️</span>
-                            )}
-                            <div>
-                                <h1 className="font-bold text-lg">{settings.companyName.split(' ')[0]}</h1>
-                                <p className="text-xs text-slate-400">ERP v5.0</p>
-                            </div>
-                        </div>
-                        <button 
-                            onClick={() => setMobileMenuOpen(false)}
-                            className="lg:hidden p-2 rounded-lg hover:bg-slate-800"
-                        >
-                            ✕
-                        </button>
-                    </div>
-                </div>
-                
-                <div className="p-4 border-b border-slate-700">
-                    <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-slate-700 rounded-full flex items-center justify-center text-xl">
-                            {profile.avatar_url ? (
-                                <img src={profile.avatar_url} alt="" className="w-full h-full rounded-full object-cover" />
-                            ) : (
-                                '👤'
-                            )}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                            <p className="font-medium text-sm truncate">{profile.full_name}</p>
-                            <p className="text-xs text-slate-400">{getRoleName(profile.role)}</p>
-                        </div>
-                    </div>
-                </div>
-                
-                <nav className="p-3 space-y-1 overflow-y-auto" style={{ maxHeight: 'calc(100vh - 250px)' }}>
-                    {menuItems.map((item, index) => (
-                        <button
-                            key={index}
-                            onClick={() => {
-                                item.onClick()
-                                setMobileMenuOpen(false)
-                            }}
-                            className={`
-                                w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors
-                                ${item.active ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}
-                            `}
-                        >
-                            <span className="text-lg">{item.icon}</span>
-                            <span className="text-sm font-medium">{item.label}</span>
-                        </button>
-                    ))}
-                </nav>
-                
-                <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-slate-700">
-                    <button
-                        onClick={signOut}
-                        className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-red-400 hover:bg-slate-800 transition-colors"
-                    >
-                        <span className="text-lg">🚪</span>
-                        <span className="text-sm font-medium">Cerrar Sesión</span>
-                    </button>
-                </div>
-            </aside>
-        </>
-    )
-}
-
-// ============================================
-// MOBILE HEADER
-// ============================================
-function MobileHeader() {
-    const { profile, setMobileMenuOpen, settings } = useApp()
-    
-    if (!profile) return null
-    
-    return (
-        <div className="fixed top-0 left-0 right-0 bg-slate-900 text-white z-30 px-4 py-3 flex items-center justify-between lg:hidden">
-            <button 
-                onClick={() => setMobileMenuOpen(true)}
-                className="p-2 rounded-lg hover:bg-slate-800"
+        {/* Labor Section */}
+        <div className="bg-white rounded-xl shadow p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-800">Mano de Obra</h3>
+            <button
+              type="button"
+              onClick={addLaborRow}
+              className="text-blue-600 hover:text-blue-800 font-medium text-sm flex items-center gap-1"
             >
-                <span className="text-2xl">☰</span>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              Agregar Fila
             </button>
-            <div className="flex items-center gap-2">
-                {settings.logoUrl ? (
-                    <img src={settings.logoUrl} alt="Logo" className="h-8 w-8 object-contain" />
-                ) : (
-                    <span className="text-2xl">🏗️</span>
+          </div>
+          
+          <div className="space-y-3">
+            {laborRows.map((row, index) => (
+              <div key={index} className="flex gap-3 items-center">
+                <select
+                  value={row.worker_type}
+                  onChange={(e) => updateLaborRow(index, 'worker_type', e.target.value)}
+                  className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                >
+                  {workerTypes.map(wt => (
+                    <option key={wt.value} value={wt.value}>
+                      {wt.label} (S/ {wt.rate}/hora)
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  placeholder="Horas"
+                  value={row.hours}
+                  onChange={(e) => updateLaborRow(index, 'hours', e.target.value)}
+                  className="w-32 border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                />
+                {laborRows.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => removeLaborRow(index)}
+                    className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
                 )}
-                <span className="font-bold">{settings.companyName.split(' ')[0]}</span>
-            </div>
-            <div className="w-8 h-8 bg-slate-700 rounded-full flex items-center justify-center">
-                👤
-            </div>
+              </div>
+            ))}
+          </div>
         </div>
-    )
-}
 
-// ============================================
-// PROJECT SELECTOR (Card Grid)
-// ============================================
-function ProjectSelector({ title, subtitle }) {
-    const { projects, selectProject, loading } = useApp()
-    
-    if (loading) {
-        return <LoadingSpinner message="Cargando proyectos..." />
-    }
-    
-    if (projects.length === 0) {
-        return (
-            <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-                <div className="text-center">
-                    <span className="text-6xl mb-4 block">📁</span>
-                    <h2 className="text-xl font-semibold text-slate-700 mb-2">Sin Proyectos Asignados</h2>
-                    <p className="text-slate-500">Contacte al administrador para asignar proyectos.</p>
+        {/* Materials Section */}
+        <div className="bg-white rounded-xl shadow p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-800">Materiales Utilizados</h3>
+            <button
+              type="button"
+              onClick={addMaterialRow}
+              className="text-blue-600 hover:text-blue-800 font-medium text-sm flex items-center gap-1"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              Agregar Material
+            </button>
+          </div>
+          
+          <div className="space-y-3">
+            {materialRows.map((row, index) => (
+              <div key={index} className="flex gap-3 items-center">
+                <select
+                  value={row.material_id}
+                  onChange={(e) => updateMaterialRow(index, 'material_id', e.target.value)}
+                  className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">-- Seleccionar material --</option>
+                  {materials.map(mat => (
+                    <option key={mat.id} value={mat.id}>
+                      {mat.name} ({mat.unit}) - S/ {mat.unit_cost}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="Cantidad"
+                  value={row.quantity}
+                  onChange={(e) => updateMaterialRow(index, 'quantity', e.target.value)}
+                  className="w-32 border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                />
+                {materialRows.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => removeMaterialRow(index)}
+                    className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Photos Section */}
+        <div className="bg-white rounded-xl shadow p-6">
+          <h3 className="text-lg font-semibold text-gray-800 mb-4">Evidencia Fotográfica</h3>
+          
+          <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-400 transition">
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={handlePhotoUpload}
+              className="hidden"
+              id="photo-upload"
+              disabled={uploadingPhotos}
+            />
+            <label
+              htmlFor="photo-upload"
+              className="cursor-pointer flex flex-col items-center gap-2"
+            >
+              {uploadingPhotos ? (
+                <>
+                  <Spinner size="md" />
+                  <span className="text-gray-600">Subiendo fotos...</span>
+                </>
+              ) : (
+                <>
+                  <svg className="w-12 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                  <span className="text-gray-600">Haga clic para subir fotos</span>
+                  <span className="text-sm text-gray-400">JPG, PNG hasta 10MB</span>
+                </>
+              )}
+            </label>
+          </div>
+
+          {photos.length > 0 && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+              {photos.map((photo, index) => (
+                <div key={index} className="relative group">
+                  <img
+                    src={photo.url}
+                    alt={photo.name}
+                    className="w-full h-24 object-cover rounded-lg"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removePhoto(index)}
+                    className="absolute top-1 right-1 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
                 </div>
+              ))}
             </div>
-        )
-    }
-    
+          )}
+        </div>
+
+        {/* Notes */}
+        <div className="bg-white rounded-xl shadow p-6">
+          <h3 className="text-lg font-semibold text-gray-800 mb-4">Observaciones</h3>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={4}
+            className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            placeholder="Ingrese observaciones del día, incidentes, clima, etc."
+          />
+        </div>
+
+        {/* Validation Error */}
+        {validationError && (
+          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+            {validationError}
+          </div>
+        )}
+
+        {/* Submit Button */}
+        <button
+          type="submit"
+          disabled={submitting || uploadingPhotos}
+          className="w-full bg-blue-600 text-white py-4 rounded-xl font-semibold text-lg hover:bg-blue-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
+        >
+          {submitting && <Spinner size="sm" />}
+          {submitting ? 'Guardando Reporte...' : 'Guardar Reporte Diario'}
+        </button>
+      </form>
+    </div>
+  );
+};
+
+// ============== ENGINEER MODULE ==============
+const EngineerModule = ({ project }) => {
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('progress');
+  const [partidas, setPartidas] = useState([]);
+  const [dailyReports, setDailyReports] = useState([]);
+  const [selectedReport, setSelectedReport] = useState(null);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!project?.id) return;
+      setLoading(true);
+
+      try {
+        const [partidasRes, reportsRes] = await Promise.all([
+          supabase
+            .from('partidas')
+            .select('*')
+            .eq('project_id', project.id)
+            .order('code'),
+          supabase
+            .from('daily_reports')
+            .select('*, profiles(full_name), partidas(code, name)')
+            .eq('project_id', project.id)
+            .order('report_date', { ascending: false })
+        ]);
+
+        if (partidasRes.data) setPartidas(partidasRes.data);
+        if (reportsRes.data) setDailyReports(reportsRes.data);
+      } catch (error) {
+        console.error('Error fetching engineer data:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, [project?.id]);
+
+  const handleExportCSV = () => {
+    const exportData = partidas.map(p => ({
+      Codigo: p.code,
+      Partida: p.name,
+      Unidad: p.unit,
+      Presupuestado: p.total_budgeted || 0,
+      'Avance Actual': p.current_progress || 0,
+      'Porcentaje (%)': ((p.current_progress || 0) / (p.total_budgeted || 1) * 100).toFixed(2),
+      'Precio Unitario': p.unit_price || 0,
+      'Costo Presupuestado': (p.total_budgeted || 0) * (p.unit_price || 0),
+      'Costo Ejecutado': (p.current_progress || 0) * (p.unit_price || 0)
+    }));
+
+    exportToCSV(exportData, `avance_${project.name.replace(/\s+/g, '_')}`);
+  };
+
+  const tabs = [
+    { id: 'progress', label: 'Avance de Partidas' },
+    { id: 'reports', label: 'Reportes Diarios' },
+    { id: 'evidence', label: 'Evidencia Fotográfica' }
+  ];
+
+  if (loading) {
     return (
-        <div className="min-h-screen bg-slate-50 p-4 sm:p-6 pt-20 lg:pt-6">
-            <div className="max-w-6xl mx-auto">
-                <div className="text-center mb-8">
-                    <h1 className="text-2xl sm:text-3xl font-bold text-slate-800 mb-2">{title}</h1>
-                    <p className="text-slate-500">{subtitle}</p>
-                </div>
-                
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
-                    {projects.map(project => {
-                        const progressColor = project.progress >= 75 ? 'bg-green-500' 
-                            : project.progress >= 50 ? 'bg-blue-500' 
-                            : project.progress >= 25 ? 'bg-yellow-500' 
-                            : 'bg-red-500'
-                        
-                        return (
+      <div className="flex items-center justify-center h-64">
+        <Spinner size="lg" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <h2 className="text-2xl font-bold text-gray-800">Panel de Ingeniero</h2>
+        <button
+          onClick={handleExportCSV}
+          className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition flex items-center gap-2"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          Exportar Excel
+        </button>
+      </div>
+
+      {/* Tabs */}
+      <div className="border-b border-gray-200">
+        <nav className="flex gap-4 overflow-x-auto">
+          {tabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`py-3 px-1 border-b-2 font-medium text-sm whitespace-nowrap transition ${
+                activeTab === tab.id
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {/* Progress Tab */}
+      {activeTab === 'progress' && (
+        <div className="bg-white rounded-xl shadow overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Código</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Partida</th>
+                  <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Unidad</th>
+                  <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Presupuestado</th>
+                  <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Ejecutado</th>
+                  <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Avance</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {partidas.map(partida => {
+                  const progress = ((partida.current_progress || 0) / (partida.total_budgeted || 1)) * 100;
+                  return (
+                    <tr key={partida.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 font-mono text-sm text-gray-600">{partida.code}</td>
+                      <td className="px-4 py-3 font-medium text-gray-900">{partida.name}</td>
+                      <td className="px-4 py-3 text-center text-gray-600">{partida.unit}</td>
+                      <td className="px-4 py-3 text-center text-gray-600">{partida.total_budgeted || 0}</td>
+                      <td className="px-4 py-3 text-center font-medium text-gray-900">{partida.current_progress || 0}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 bg-gray-200 rounded-full h-2">
                             <div
-                                key={project.id}
-                                onClick={() => selectProject(project)}
-                                className="bg-white rounded-2xl shadow-sm hover:shadow-lg transition-all cursor-pointer border border-slate-100 overflow-hidden group"
-                            >
-                                <div className={`h-2 ${progressColor}`}></div>
-                                <div className="p-5 sm:p-6">
-                                    <div className="flex justify-between items-start mb-3">
-                                        <div className="flex-1 min-w-0">
-                                            <h3 className="font-semibold text-slate-800 group-hover:text-blue-600 transition-colors truncate">
-                                                {project.name}
-                                            </h3>
-                                            <p className="text-sm text-slate-500 font-mono">{project.code}</p>
-                                        </div>
-                                        <span className={`px-2 py-1 text-xs font-medium rounded-full shrink-0 ml-2 ${
-                                            project.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-700'
-                                        }`}>
-                                            {project.status === 'active' ? '● Activo' : project.status}
-                                        </span>
-                                    </div>
-                                    
-                                    <div className="space-y-2 mb-4">
-                                        <div className="flex items-center gap-2 text-sm text-slate-600">
-                                            <span>🏢</span>
-                                            <span className="truncate">{project.client_name}</span>
-                                        </div>
-                                        <div className="flex items-center gap-2 text-sm text-slate-600">
-                                            <span>📍</span>
-                                            <span className="truncate">{project.location}</span>
-                                        </div>
-                                    </div>
-                                    
-                                    <div className="mb-4">
-                                        <div className="flex justify-between text-sm mb-1">
-                                            <span className="text-slate-500">Avance</span>
-                                            <span className="font-semibold text-slate-700">{project.progress || 0}%</span>
-                                        </div>
-                                        <div className="w-full bg-slate-200 rounded-full h-2.5">
-                                            <div 
-                                                className={`h-2.5 rounded-full ${progressColor} transition-all`} 
-                                                style={{ width: `${project.progress || 0}%` }}
-                                            ></div>
-                                        </div>
-                                    </div>
-                                    
-                                    <div className="grid grid-cols-2 gap-3 pt-3 border-t border-slate-100">
-                                        <div>
-                                            <p className="text-xs text-slate-500">Presupuesto</p>
-                                            <p className="font-semibold text-slate-800 text-sm truncate">
-                                                {formatCurrency(project.budget)}
-                                            </p>
-                                        </div>
-                                        <div className="text-right">
-                                            <p className="text-xs text-slate-500">Ejecutado</p>
-                                            <p className="font-semibold text-green-600 text-sm truncate">
-                                                {formatCurrency(project.spent || 0)}
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        )
-                    })}
-                </div>
-            </div>
+                              className={`h-2 rounded-full ${
+                                progress >= 100 ? 'bg-green-500' : progress >= 50 ? 'bg-blue-500' : 'bg-yellow-500'
+                              }`}
+                              style={{ width: `${Math.min(progress, 100)}%` }}
+                            />
+                          </div>
+                          <span className="text-sm font-medium text-gray-600 w-12 text-right">
+                            {progress.toFixed(0)}%
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
-    )
-}
+      )}
 
-// ============================================
-// MAIN CONTENT WRAPPER
-// ============================================
-function MainContent({ children, title, subtitle, showBackButton = false }) {
-    const { selectProject } = useApp()
-    
-    return (
-        <main className="lg:ml-64 min-h-screen bg-slate-50 p-4 sm:p-6 pt-20 lg:pt-6">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-                <div>
-                    <h1 className="text-xl sm:text-2xl font-bold text-slate-800">{title}</h1>
-                    {subtitle && <p className="text-sm sm:text-base text-slate-500 mt-1">{subtitle}</p>}
+      {/* Reports Tab */}
+      {activeTab === 'reports' && (
+        <div className="bg-white rounded-xl shadow overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Fecha</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Partida</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Reportado por</th>
+                  <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Avance</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Costo MO</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Costo Mat.</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {dailyReports.map(report => (
+                  <tr
+                    key={report.id}
+                    className="hover:bg-gray-50 cursor-pointer"
+                    onClick={() => setSelectedReport(report)}
+                  >
+                    <td className="px-4 py-3 text-gray-600">
+                      {new Date(report.report_date).toLocaleDateString('es-PE')}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="font-mono text-sm text-gray-500">{report.partidas?.code}</span>
+                      <span className="ml-2 text-gray-900">{report.partidas?.name}</span>
+                    </td>
+                    <td className="px-4 py-3 text-gray-600">{report.profiles?.full_name}</td>
+                    <td className="px-4 py-3 text-center font-medium text-gray-900">{report.progress_value}</td>
+                    <td className="px-4 py-3 text-right text-gray-600">
+                      {formatCurrency(report.total_labor_cost)}
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-600">
+                      {formatCurrency(report.total_materials_cost)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Evidence Tab */}
+      {activeTab === 'evidence' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {dailyReports
+            .filter(report => report.photos && report.photos.length > 0)
+            .map(report => (
+              <div key={report.id} className="bg-white rounded-xl shadow overflow-hidden">
+                <div className="p-4 border-b">
+                  <p className="font-medium text-gray-900">
+                    {new Date(report.report_date).toLocaleDateString('es-PE')}
+                  </p>
+                  <p className="text-sm text-gray-500">{report.partidas?.name}</p>
+                  <p className="text-xs text-gray-400">Por: {report.profiles?.full_name}</p>
                 </div>
-                {showBackButton && (
-                    <button 
-                        onClick={() => selectProject(null)}
-                        className="flex items-center gap-2 text-blue-600 hover:text-blue-700 px-3 py-2 rounded-lg hover:bg-blue-50"
+                <div className="grid grid-cols-2 gap-1 p-1">
+                  {report.photos.map((photo, idx) => (
+                    <a
+                      key={idx}
+                      href={photo.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block"
                     >
-                        <span>←</span> Volver al listado
-                    </button>
-                )}
-            </div>
-            {children}
-        </main>
-    )
-}
-
-// ============================================
-// FOREMAN MODULE
-// ============================================
-function ForemanModule() {
-    const { 
-        currentProject, 
-        boqItems, 
-        dailyLogs, 
-        materials, 
-        machinery, 
-        personnelTypes,
-        createDailyLog,
-        loading,
-        profile 
-    } = useApp()
-    
-    const [activeTab, setActiveTab] = useState('progress')
-    const [formData, setFormData] = useState({
-        boqItemId: '',
-        date: new Date().toISOString().split('T')[0],
-        quantityExecuted: '',
-        notes: '',
-        labor: [],
-        materials: [],
-        machinery: []
-    })
-    const [evidenceFile, setEvidenceFile] = useState(null)
-    const [submitting, setSubmitting] = useState(false)
-
-    // Add labor row
-    const addLaborRow = () => {
-        setFormData(prev => ({
-            ...prev,
-            labor: [...prev.labor, { role: personnelTypes[0]?.name || '', count: 1, hours: 8 }]
-        }))
-    }
-
-    // Update labor row
-    const updateLaborRow = (index, field, value) => {
-        setFormData(prev => ({
-            ...prev,
-            labor: prev.labor.map((row, i) => i === index ? { ...row, [field]: value } : row)
-        }))
-    }
-
-    // Remove labor row
-    const removeLaborRow = (index) => {
-        setFormData(prev => ({
-            ...prev,
-            labor: prev.labor.filter((_, i) => i !== index)
-        }))
-    }
-
-    // Add material row
-    const addMaterialRow = () => {
-        setFormData(prev => ({
-            ...prev,
-            materials: [...prev.materials, { name: materials[0]?.name || '', qty: 1, unit: materials[0]?.unit || 'UND' }]
-        }))
-    }
-
-    // Update material row
-    const updateMaterialRow = (index, field, value) => {
-        setFormData(prev => ({
-            ...prev,
-            materials: prev.materials.map((row, i) => i === index ? { ...row, [field]: value } : row)
-        }))
-    }
-
-    // Remove material row
-    const removeMaterialRow = (index) => {
-        setFormData(prev => ({
-            ...prev,
-            materials: prev.materials.filter((_, i) => i !== index)
-        }))
-    }
-
-    // Add machinery row
-    const addMachineryRow = () => {
-        setFormData(prev => ({
-            ...prev,
-            machinery: [...prev.machinery, { name: machinery[0]?.name || '', hours: 1 }]
-        }))
-    }
-
-    // Update machinery row
-    const updateMachineryRow = (index, field, value) => {
-        setFormData(prev => ({
-            ...prev,
-            machinery: prev.machinery.map((row, i) => i === index ? { ...row, [field]: value } : row)
-        }))
-    }
-
-    // Remove machinery row
-    const removeMachineryRow = (index) => {
-        setFormData(prev => ({
-            ...prev,
-            machinery: prev.machinery.filter((_, i) => i !== index)
-        }))
-    }
-
-    // Handle file selection
-    const handleFileSelect = (e) => {
-        const file = e.target.files[0]
-        if (file) {
-            setEvidenceFile(file)
-        }
-    }
-
-    // Validate quantity against budget
-    const validateQuantity = () => {
-        if (!formData.boqItemId || !formData.quantityExecuted) return { valid: true }
-        
-        const boqItem = boqItems.find(b => b.id === formData.boqItemId)
-        if (!boqItem) return { valid: false, message: 'Partida no encontrada' }
-        
-        const approvedQty = dailyLogs
-            .filter(l => l.boq_item_id === formData.boqItemId && l.status === 'approved')
-            .reduce((sum, l) => sum + l.quantity_executed, 0)
-        
-        const pendingQty = dailyLogs
-            .filter(l => l.boq_item_id === formData.boqItemId && l.status === 'pending')
-            .reduce((sum, l) => sum + l.quantity_executed, 0)
-        
-        const newQty = parseFloat(formData.quantityExecuted)
-        const totalAfterNew = approvedQty + pendingQty + newQty
-        
-        if (totalAfterNew > boqItem.total_metrado) {
-            return {
-                valid: false,
-                message: `Error: Mayor Metrado. El avance (${totalAfterNew.toFixed(2)}) supera el expediente técnico (${boqItem.total_metrado})`
-            }
-        }
-        
-        return { valid: true, remaining: boqItem.total_metrado - totalAfterNew }
-    }
-
-    // Get toast context
-    const { addToast } = useToast()
-    
-    // Submit daily log
-    const handleSubmit = async (e) => {
-        e.preventDefault()
-        
-        const validation = validateQuantity()
-        if (!validation.valid) {
-            addToast(validation.message, 'error')
-            return
-        }
-        
-        try {
-            setSubmitting(true)
-            
-            await createDailyLog({
-                boqItemId: formData.boqItemId,
-                date: formData.date,
-                quantityExecuted: parseFloat(formData.quantityExecuted),
-                notes: formData.notes,
-                labor: formData.labor,
-                materials: formData.materials,
-                machinery: formData.machinery
-            }, evidenceFile)
-            
-            // Reset form
-            setFormData({
-                boqItemId: '',
-                date: new Date().toISOString().split('T')[0],
-                quantityExecuted: '',
-                notes: '',
-                labor: [],
-                materials: [],
-                machinery: []
-            })
-            setEvidenceFile(null)
-            
-            addToast('Reporte enviado correctamente', 'success')
-        } catch (err) {
-            addToast('Error al enviar reporte: ' + err.message, 'error')
-        } finally {
-            setSubmitting(false)
-        }
-    }
-
-    // My logs for this project
-    const myLogs = dailyLogs.filter(l => l.foreman_id === profile?.id)
-
-    const menuItems = [
-        { icon: '📝', label: 'Reportar Avance', active: activeTab === 'progress', onClick: () => setActiveTab('progress') },
-        { icon: '📋', label: 'Mis Partidas', active: activeTab === 'partidas', onClick: () => setActiveTab('partidas') }
-    ]
-
-    if (!currentProject) {
-        return (
-            <>
-                <MobileHeader />
-                <ProjectSelector 
-                    title="Reporte de Avance" 
-                    subtitle="Seleccione un proyecto para reportar avance diario"
-                />
-            </>
-        )
-    }
-
-    return (
-        <>
-            <MobileHeader />
-            <Sidebar menuItems={menuItems} />
-            <MainContent 
-                title={currentProject.name} 
-                subtitle="Reporte de Avance Diario"
-                showBackButton
-            >
-                {loading ? <LoadingSpinner /> : (
-                    <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-6">
-                        {activeTab === 'progress' && (
-                            <>
-                                <h3 className="text-lg font-semibold text-slate-800 mb-4">📝 Nuevo Reporte de Avance</h3>
-                                
-                                <form onSubmit={handleSubmit} className="space-y-6">
-                                    {/* BOQ Item Selection */}
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Partida</label>
-                                            <select
-                                                value={formData.boqItemId}
-                                                onChange={(e) => setFormData(prev => ({ ...prev, boqItemId: e.target.value }))}
-                                                required
-                                                className="w-full px-4 py-2.5 border border-slate-200 rounded-lg bg-white"
-                                            >
-                                                <option value="">Seleccionar...</option>
-                                                {boqItems.filter(b => b.progress < 100).map(item => (
-                                                    <option key={item.id} value={item.id}>
-                                                        {item.code} - {item.description} ({item.progress || 0}%)
-                                                    </option>
-                                                ))}
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Fecha</label>
-                                            <input
-                                                type="date"
-                                                value={formData.date}
-                                                onChange={(e) => setFormData(prev => ({ ...prev, date: e.target.value }))}
-                                                required
-                                                className="w-full px-4 py-2.5 border border-slate-200 rounded-lg"
-                                            />
-                                        </div>
-                                    </div>
-                                    
-                                    {/* Quantity and Notes */}
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Cantidad Ejecutada</label>
-                                            <input
-                                                type="number"
-                                                value={formData.quantityExecuted}
-                                                onChange={(e) => setFormData(prev => ({ ...prev, quantityExecuted: e.target.value }))}
-                                                required
-                                                min="0"
-                                                step="0.01"
-                                                className="w-full px-4 py-2.5 border border-slate-200 rounded-lg"
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Observaciones</label>
-                                            <input
-                                                type="text"
-                                                value={formData.notes}
-                                                onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value }))}
-                                                className="w-full px-4 py-2.5 border border-slate-200 rounded-lg"
-                                                placeholder="Notas adicionales..."
-                                            />
-                                        </div>
-                                    </div>
-                                    
-                                    {/* Labor Section */}
-                                    <div className="border border-slate-200 rounded-xl p-4">
-                                        <div className="flex justify-between items-center mb-3">
-                                            <h4 className="font-medium text-slate-700">👷 Mano de Obra</h4>
-                                            <button
-                                                type="button"
-                                                onClick={addLaborRow}
-                                                className="text-sm text-blue-600 hover:underline"
-                                            >
-                                                + Agregar
-                                            </button>
-                                        </div>
-                                        <div className="space-y-2">
-                                            {formData.labor.map((row, index) => (
-                                                <div key={index} className="grid grid-cols-4 gap-2">
-                                                    <select
-                                                        value={row.role}
-                                                        onChange={(e) => updateLaborRow(index, 'role', e.target.value)}
-                                                        className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                                                    >
-                                                        {personnelTypes.map(t => (
-                                                            <option key={t.id} value={t.name}>{t.name}</option>
-                                                        ))}
-                                                    </select>
-                                                    <input
-                                                        type="number"
-                                                        value={row.count}
-                                                        onChange={(e) => updateLaborRow(index, 'count', parseInt(e.target.value))}
-                                                        className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                                                        placeholder="Cantidad"
-                                                        min="1"
-                                                    />
-                                                    <input
-                                                        type="number"
-                                                        value={row.hours}
-                                                        onChange={(e) => updateLaborRow(index, 'hours', parseFloat(e.target.value))}
-                                                        className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                                                        placeholder="Horas"
-                                                        min="0"
-                                                        step="0.5"
-                                                    />
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => removeLaborRow(index)}
-                                                        className="text-red-500 text-sm"
-                                                    >
-                                                        ✕
-                                                    </button>
-                                                </div>
-                                            ))}
-                                            {formData.labor.length === 0 && (
-                                                <p className="text-sm text-slate-400 text-center py-2">
-                                                    Sin mano de obra registrada
-                                                </p>
-                                            )}
-                                        </div>
-                                    </div>
-                                    
-                                    {/* Materials Section */}
-                                    <div className="border border-slate-200 rounded-xl p-4">
-                                        <div className="flex justify-between items-center mb-3">
-                                            <h4 className="font-medium text-slate-700">📦 Materiales</h4>
-                                            <button
-                                                type="button"
-                                                onClick={addMaterialRow}
-                                                className="text-sm text-blue-600 hover:underline"
-                                            >
-                                                + Agregar
-                                            </button>
-                                        </div>
-                                        <div className="space-y-2">
-                                            {formData.materials.map((row, index) => (
-                                                <div key={index} className="grid grid-cols-4 gap-2">
-                                                    <select
-                                                        value={row.name}
-                                                        onChange={(e) => {
-                                                            const mat = materials.find(m => m.name === e.target.value)
-                                                            updateMaterialRow(index, 'name', e.target.value)
-                                                            if (mat) updateMaterialRow(index, 'unit', mat.unit)
-                                                        }}
-                                                        className="px-3 py-2 border border-slate-200 rounded-lg text-sm col-span-2"
-                                                    >
-                                                        {materials.map(m => (
-                                                            <option key={m.id} value={m.name}>{m.name}</option>
-                                                        ))}
-                                                    </select>
-                                                    <input
-                                                        type="number"
-                                                        value={row.qty}
-                                                        onChange={(e) => updateMaterialRow(index, 'qty', parseFloat(e.target.value))}
-                                                        className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                                                        placeholder="Cantidad"
-                                                        min="0"
-                                                        step="0.01"
-                                                    />
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => removeMaterialRow(index)}
-                                                        className="text-red-500 text-sm"
-                                                    >
-                                                        ✕
-                                                    </button>
-                                                </div>
-                                            ))}
-                                            {formData.materials.length === 0 && (
-                                                <p className="text-sm text-slate-400 text-center py-2">
-                                                    Sin materiales registrados
-                                                </p>
-                                            )}
-                                        </div>
-                                    </div>
-                                    
-                                    {/* Machinery Section */}
-                                    <div className="border border-slate-200 rounded-xl p-4">
-                                        <div className="flex justify-between items-center mb-3">
-                                            <h4 className="font-medium text-slate-700">🚜 Maquinaria</h4>
-                                            <button
-                                                type="button"
-                                                onClick={addMachineryRow}
-                                                className="text-sm text-blue-600 hover:underline"
-                                            >
-                                                + Agregar
-                                            </button>
-                                        </div>
-                                        <div className="space-y-2">
-                                            {formData.machinery.map((row, index) => (
-                                                <div key={index} className="grid grid-cols-3 gap-2">
-                                                    <select
-                                                        value={row.name}
-                                                        onChange={(e) => updateMachineryRow(index, 'name', e.target.value)}
-                                                        className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                                                    >
-                                                        {machinery.map(m => (
-                                                            <option key={m.id} value={m.name}>{m.name}</option>
-                                                        ))}
-                                                    </select>
-                                                    <input
-                                                        type="number"
-                                                        value={row.hours}
-                                                        onChange={(e) => updateMachineryRow(index, 'hours', parseFloat(e.target.value))}
-                                                        className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                                                        placeholder="Horas"
-                                                        min="0"
-                                                        step="0.5"
-                                                    />
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => removeMachineryRow(index)}
-                                                        className="text-red-500 text-sm"
-                                                    >
-                                                        ✕
-                                                    </button>
-                                                </div>
-                                            ))}
-                                            {formData.machinery.length === 0 && (
-                                                <p className="text-sm text-slate-400 text-center py-2">
-                                                    Sin maquinaria registrada
-                                                </p>
-                                            )}
-                                        </div>
-                                    </div>
-                                    
-                                    {/* Evidence Upload */}
-                                    <div className="border border-slate-200 rounded-xl p-4">
-                                        <h4 className="font-medium text-slate-700 mb-3">📷 Evidencia Fotográfica</h4>
-                                        <label className={`
-                                            block border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors
-                                            ${evidenceFile ? 'border-green-500 bg-green-50' : 'border-slate-300 hover:border-blue-500'}
-                                        `}>
-                                            <input
-                                                type="file"
-                                                accept="image/*"
-                                                onChange={handleFileSelect}
-                                                className="hidden"
-                                            />
-                                            {evidenceFile ? (
-                                                <>
-                                                    <span className="text-3xl block mb-2">✅</span>
-                                                    <span className="text-green-600 font-medium">{evidenceFile.name}</span>
-                                                </>
-                                            ) : (
-                                                <>
-                                                    <span className="text-3xl block mb-2">📤</span>
-                                                    <span className="text-slate-500">Clic para subir foto</span>
-                                                </>
-                                            )}
-                                        </label>
-                                    </div>
-                                    
-                                    <button
-                                        type="submit"
-                                        disabled={submitting}
-                                        className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-50"
-                                    >
-                                        {submitting ? 'Enviando...' : '✓ Registrar Avance'}
-                                    </button>
-                                </form>
-                            </>
-                        )}
-                        
-                        {activeTab === 'partidas' && (
-                            <>
-                                <h3 className="text-lg font-semibold text-slate-800 mb-4">📋 Mis Partidas y Reportes</h3>
-                                
-                                {/* BOQ Items Grid */}
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-                                    {boqItems.map(item => (
-                                        <div key={item.id} className="bg-slate-50 rounded-xl p-4">
-                                            <div className="flex justify-between items-start mb-2">
-                                                <div>
-                                                    <span className="font-mono text-xs text-slate-500">{item.code}</span>
-                                                    <p className="font-medium">{item.description}</p>
-                                                </div>
-                                                <span className={`px-2 py-1 text-xs rounded-full ${
-                                                    item.progress === 100 ? 'bg-green-100 text-green-700' 
-                                                    : item.progress > 0 ? 'bg-blue-100 text-blue-700' 
-                                                    : 'bg-slate-100 text-slate-700'
-                                                }`}>
-                                                    {item.progress === 100 ? 'Completado' : item.progress > 0 ? 'En Progreso' : 'Pendiente'}
-                                                </span>
-                                            </div>
-                                            <div className="flex items-center gap-3 text-sm text-slate-500 mb-2">
-                                                <span>{item.total_metrado} {item.unit}</span>
-                                                <span>•</span>
-                                                <span>{item.category}</span>
-                                            </div>
-                                            <div className="w-full bg-slate-200 rounded-full h-2">
-                                                <div 
-                                                    className="h-2 rounded-full bg-blue-500" 
-                                                    style={{ width: `${item.progress || 0}%` }}
-                                                ></div>
-                                            </div>
-                                            <p className="text-right text-sm font-medium mt-1">{item.progress || 0}%</p>
-                                        </div>
-                                    ))}
-                                </div>
-                                
-                                {/* My Reports */}
-                                <h4 className="font-semibold text-slate-700 mb-3">📝 Mis Reportes</h4>
-                                <div className="space-y-3">
-                                    {myLogs.length === 0 && (
-                                        <p className="text-slate-500 text-center py-8">Sin reportes aún</p>
-                                    )}
-                                    {myLogs.map(log => {
-                                        const boqItem = boqItems.find(b => b.id === log.boq_item_id)
-                                        return (
-                                            <div key={log.id} className="bg-slate-50 rounded-xl p-4">
-                                                <div className="flex justify-between items-start mb-2">
-                                                    <div>
-                                                        <p className="font-medium">{boqItem?.description || log.boq_item?.description}</p>
-                                                        <p className="text-sm text-slate-500">{log.notes}</p>
-                                                    </div>
-                                                    <div className="text-right">
-                                                        <span className="font-medium text-blue-600">
-                                                            +{log.quantity_executed} {boqItem?.unit || log.boq_item?.unit}
-                                                        </span>
-                                                        <p className="text-xs text-slate-400">{formatDate(log.log_date)}</p>
-                                                    </div>
-                                                </div>
-                                                <div className="flex flex-wrap gap-2 mt-2">
-                                                    {log.labor_json?.length > 0 && (
-                                                        <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded">
-                                                            👷 {log.labor_json.reduce((s, l) => s + l.count, 0)} trabajadores
-                                                        </span>
-                                                    )}
-                                                    {log.materials_json?.length > 0 && (
-                                                        <span className="px-2 py-1 bg-green-100 text-green-700 text-xs rounded">
-                                                            📦 {log.materials_json.length} material(es)
-                                                        </span>
-                                                    )}
-                                                    {log.machinery_json?.length > 0 && (
-                                                        <span className="px-2 py-1 bg-orange-100 text-orange-700 text-xs rounded">
-                                                            🚜 {log.machinery_json.length} maquinaria(s)
-                                                        </span>
-                                                    )}
-                                                    {log.evidence_urls?.length > 0 && (
-                                                        <span className="px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded">📷</span>
-                                                    )}
-                                                    {getStatusBadge(log.status)}
-                                                </div>
-                                            </div>
-                                        )
-                                    })}
-                                </div>
-                            </>
-                        )}
-                    </div>
-                )}
-            </MainContent>
-        </>
-    )
-}
-
-// ============================================
-// ENGINEER MODULE
-// ============================================
-function EngineerModule() {
-    const { 
-        currentProject, 
-        boqItems, 
-        dailyLogs, 
-        requisitions,
-        updateLogStatus,
-        createRequisition,
-        updateRequisitionStatus,
-        materials,
-        loading 
-    } = useApp()
-    
-    const [activeTab, setActiveTab] = useState('approve')
-    const [reqForm, setReqForm] = useState({
-        materialId: '',
-        itemName: '',
-        quantity: '',
-        unit: 'UND',
-        urgency: 'medium',
-        notes: ''
-    })
-
-    // Get toast context
-    const { addToast } = useToast()
-    
-    // Pending logs for approval
-    const pendingLogs = dailyLogs.filter(l => l.status === 'pending')
-    
-    // In-transit requisitions
-    const inTransitReqs = requisitions.filter(r => r.status === 'in_transit')
-
-    const handleApproveLog = async (logId) => {
-        try {
-            await updateLogStatus(logId, 'approved')
-            addToast('Parte diario aprobado', 'success')
-        } catch (err) {
-            addToast('Error: ' + err.message, 'error')
-        }
-    }
-
-    const handleRejectLog = async (logId) => {
-        const reason = prompt('Razón del rechazo:')
-        if (reason) {
-            try {
-                await updateLogStatus(logId, 'rejected', reason)
-                addToast('Parte diario rechazado', 'warning')
-            } catch (err) {
-                addToast('Error: ' + err.message, 'error')
-            }
-        }
-    }
-
-    const handleCreateRequisition = async (e) => {
-        e.preventDefault()
-        try {
-            await createRequisition(reqForm)
-            setReqForm({
-                materialId: '',
-                itemName: '',
-                quantity: '',
-                unit: 'UND',
-                urgency: 'medium',
-                notes: ''
-            })
-            addToast('Requerimiento enviado correctamente', 'success')
-        } catch (err) {
-            addToast('Error: ' + err.message, 'error')
-        }
-    }
-
-    const handleConfirmReceived = async (reqId) => {
-        try {
-            await updateRequisitionStatus(reqId, 'completed')
-            addToast('Material recibido confirmado', 'success')
-        } catch (err) {
-            addToast('Error: ' + err.message, 'error')
-        }
-    }
-
-    // Calculate valuations
-    const totalBudget = boqItems.reduce((s, i) => s + (i.total_metrado * i.unit_price), 0)
-    const totalValorized = boqItems.reduce((s, i) => s + (i.total_metrado * i.unit_price * (i.progress || 0) / 100), 0)
-
-    // Download CSV
-    const downloadCSV = () => {
-        let csv = 'Código,Descripción,Unidad,Metrado,P.U.,Total,% Avance,Valorizado\n'
-        boqItems.forEach(item => {
-            const total = item.total_metrado * item.unit_price
-            const valorized = total * (item.progress || 0) / 100
-            csv += `"${item.code}","${item.description}","${item.unit}",${item.total_metrado},${item.unit_price},${total},${item.progress || 0}%,${valorized}\n`
-        })
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-        const link = document.createElement('a')
-        link.href = URL.createObjectURL(blob)
-        link.download = `valorizacion_${currentProject.code}_${new Date().toISOString().split('T')[0]}.csv`
-        link.click()
-    }
-
-    const menuItems = [
-        { icon: '✅', label: 'Aprobar Partes', active: activeTab === 'approve', onClick: () => setActiveTab('approve') },
-        { icon: '📊', label: 'Valorizaciones', active: activeTab === 'valuations', onClick: () => setActiveTab('valuations') },
-        { icon: '🛒', label: 'Requerimientos', active: activeTab === 'requisitions', onClick: () => setActiveTab('requisitions') },
-        { icon: '📷', label: 'Evidencias', active: activeTab === 'evidence', onClick: () => setActiveTab('evidence') }
-    ]
-
-    if (!currentProject) {
-        return (
-            <>
-                <MobileHeader />
-                <ProjectSelector 
-                    title="Supervisión Técnica" 
-                    subtitle="Seleccione un proyecto para supervisar"
-                />
-            </>
-        )
-    }
-
-    return (
-        <>
-            <MobileHeader />
-            <Sidebar menuItems={menuItems} />
-            <MainContent 
-                title={currentProject.name} 
-                subtitle="Supervisión Técnica"
-                showBackButton
-            >
-                {loading ? <LoadingSpinner /> : (
-                    <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-6">
-                        {activeTab === 'approve' && (
-                            <>
-                                <h3 className="text-lg font-semibold text-slate-800 mb-4">✅ Aprobar Partes Diarios</h3>
-                                
-                                {pendingLogs.length === 0 ? (
-                                    <p className="text-slate-500 text-center py-8">No hay partes pendientes de aprobación</p>
-                                ) : (
-                                    <div className="space-y-4">
-                                        {pendingLogs.map(log => {
-                                            const boqItem = boqItems.find(b => b.id === log.boq_item_id)
-                                            return (
-                                                <div key={log.id} className="p-4 bg-slate-50 rounded-xl border border-slate-200">
-                                                    <div className="flex justify-between items-start mb-3">
-                                                        <div>
-                                                            <p className="font-semibold text-slate-800">{boqItem?.description}</p>
-                                                            <p className="text-sm text-slate-500">{log.notes}</p>
-                                                            <p className="text-xs text-slate-400 mt-1">
-                                                                Por: {log.foreman?.full_name} | {formatDate(log.log_date)}
-                                                            </p>
-                                                        </div>
-                                                        <span className="font-bold text-blue-600">
-                                                            +{log.quantity_executed} {boqItem?.unit}
-                                                        </span>
-                                                    </div>
-                                                    
-                                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4 text-sm">
-                                                        <div className="bg-white p-3 rounded-lg">
-                                                            <p className="font-medium text-slate-700 mb-2">👷 Mano de Obra</p>
-                                                            {log.labor_json?.map((l, i) => (
-                                                                <p key={i} className="text-slate-500">{l.role}: {l.count} x {l.hours}h</p>
-                                                            )) || <p className="text-slate-400">-</p>}
-                                                        </div>
-                                                        <div className="bg-white p-3 rounded-lg">
-                                                            <p className="font-medium text-slate-700 mb-2">📦 Materiales</p>
-                                                            {log.materials_json?.map((m, i) => (
-                                                                <p key={i} className="text-slate-500">{m.name}: {m.qty} {m.unit}</p>
-                                                            )) || <p className="text-slate-400">-</p>}
-                                                        </div>
-                                                        <div className="bg-white p-3 rounded-lg">
-                                                            <p className="font-medium text-slate-700 mb-2">🚜 Maquinaria</p>
-                                                            {log.machinery_json?.map((m, i) => (
-                                                                <p key={i} className="text-slate-500">{m.name}: {m.hours}h</p>
-                                                            )) || <p className="text-slate-400">-</p>}
-                                                        </div>
-                                                    </div>
-                                                    
-                                                    <div className="flex items-center justify-between">
-                                                        <span className={log.evidence_urls?.length > 0 ? 'text-green-600' : 'text-slate-400'}>
-                                                            {log.evidence_urls?.length > 0 ? '📷 Con evidencia fotográfica' : '📷 Sin foto'}
-                                                        </span>
-                                                        <div className="flex gap-2">
-                                                            <button
-                                                                onClick={() => handleRejectLog(log.id)}
-                                                                className="px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200"
-                                                            >
-                                                                ✗ Rechazar
-                                                            </button>
-                                                            <button
-                                                                onClick={() => handleApproveLog(log.id)}
-                                                                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
-                                                            >
-                                                                ✓ Aprobar
-                                                            </button>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            )
-                                        })}
-                                    </div>
-                                )}
-                            </>
-                        )}
-                        
-                        {activeTab === 'valuations' && (
-                            <>
-                                <div className="flex justify-between items-center mb-4">
-                                    <h3 className="text-lg font-semibold text-slate-800">📊 Cuadro de Valorización</h3>
-                                    <button
-                                        onClick={downloadCSV}
-                                        className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700"
-                                    >
-                                        📥 Descargar CSV
-                                    </button>
-                                </div>
-                                
-                                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-                                    <div className="bg-blue-50 rounded-lg p-4">
-                                        <p className="text-sm text-blue-600 mb-1">Presupuesto</p>
-                                        <p className="text-xl font-bold text-blue-700">{formatCurrency(totalBudget)}</p>
-                                    </div>
-                                    <div className="bg-green-50 rounded-lg p-4">
-                                        <p className="text-sm text-green-600 mb-1">Valorizado</p>
-                                        <p className="text-xl font-bold text-green-700">{formatCurrency(totalValorized)}</p>
-                                    </div>
-                                    <div className="bg-orange-50 rounded-lg p-4">
-                                        <p className="text-sm text-orange-600 mb-1">Pendiente</p>
-                                        <p className="text-xl font-bold text-orange-700">{formatCurrency(totalBudget - totalValorized)}</p>
-                                    </div>
-                                    <div className="bg-purple-50 rounded-lg p-4">
-                                        <p className="text-sm text-purple-600 mb-1">% Avance</p>
-                                        <p className="text-xl font-bold text-purple-700">
-                                            {totalBudget > 0 ? Math.round(totalValorized / totalBudget * 100) : 0}%
-                                        </p>
-                                    </div>
-                                </div>
-                                
-                                <div className="overflow-x-auto">
-                                    <table className="w-full text-sm">
-                                        <thead className="bg-slate-100">
-                                            <tr>
-                                                <th className="px-3 py-2 text-left">Código</th>
-                                                <th className="px-3 py-2 text-left">Descripción</th>
-                                                <th className="px-3 py-2 text-center">Und</th>
-                                                <th className="px-3 py-2 text-right">Metrado</th>
-                                                <th className="px-3 py-2 text-right">P.U.</th>
-                                                <th className="px-3 py-2 text-right">Parcial</th>
-                                                <th className="px-3 py-2 text-center">%</th>
-                                                <th className="px-3 py-2 text-right">Valorizado</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y">
-                                            {boqItems.map(item => {
-                                                const total = item.total_metrado * item.unit_price
-                                                const valorized = total * (item.progress || 0) / 100
-                                                return (
-                                                    <tr key={item.id} className="hover:bg-slate-50">
-                                                        <td className="px-3 py-2 font-mono">{item.code}</td>
-                                                        <td className="px-3 py-2">{item.description}</td>
-                                                        <td className="px-3 py-2 text-center">{item.unit}</td>
-                                                        <td className="px-3 py-2 text-right">{item.total_metrado.toLocaleString()}</td>
-                                                        <td className="px-3 py-2 text-right">{item.unit_price.toFixed(2)}</td>
-                                                        <td className="px-3 py-2 text-right">{formatCurrency(total)}</td>
-                                                        <td className="px-3 py-2 text-center">
-                                                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                                                                (item.progress || 0) >= 75 ? 'bg-green-100 text-green-700' 
-                                                                : (item.progress || 0) >= 50 ? 'bg-blue-100 text-blue-700' 
-                                                                : 'bg-orange-100 text-orange-700'
-                                                            }`}>
-                                                                {item.progress || 0}%
-                                                            </span>
-                                                        </td>
-                                                        <td className="px-3 py-2 text-right text-green-600 font-medium">
-                                                            {formatCurrency(valorized)}
-                                                        </td>
-                                                    </tr>
-                                                )
-                                            })}
-                                        </tbody>
-                                        <tfoot className="bg-slate-100 font-bold">
-                                            <tr>
-                                                <td colSpan="5" className="px-3 py-2">TOTAL</td>
-                                                <td className="px-3 py-2 text-right">{formatCurrency(totalBudget)}</td>
-                                                <td className="px-3 py-2 text-center">
-                                                    {totalBudget > 0 ? Math.round(totalValorized / totalBudget * 100) : 0}%
-                                                </td>
-                                                <td className="px-3 py-2 text-right text-green-600">{formatCurrency(totalValorized)}</td>
-                                            </tr>
-                                        </tfoot>
-                                    </table>
-                                </div>
-                            </>
-                        )}
-                        
-                        {activeTab === 'requisitions' && (
-                            <>
-                                <h3 className="text-lg font-semibold text-slate-800 mb-4">🛒 Requerimientos de Compra</h3>
-                                
-                                {/* New Requisition Form */}
-                                <div className="bg-slate-50 rounded-xl p-6 mb-6">
-                                    <h4 className="font-semibold text-slate-700 mb-4">➕ Nuevo Requerimiento</h4>
-                                    <form onSubmit={handleCreateRequisition} className="grid grid-cols-1 md:grid-cols-5 gap-4">
-                                        <div className="md:col-span-2">
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Material</label>
-                                            <select
-                                                value={reqForm.itemName}
-                                                onChange={(e) => {
-                                                    const mat = materials.find(m => m.name === e.target.value)
-                                                    setReqForm(prev => ({
-                                                        ...prev,
-                                                        itemName: e.target.value,
-                                                        materialId: mat?.id || '',
-                                                        unit: mat?.unit || 'UND'
-                                                    }))
-                                                }}
-                                                required
-                                                className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
-                                            >
-                                                <option value="">Seleccionar...</option>
-                                                {materials.map(m => (
-                                                    <option key={m.id} value={m.name}>{m.name}</option>
-                                                ))}
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Cantidad</label>
-                                            <input
-                                                type="number"
-                                                value={reqForm.quantity}
-                                                onChange={(e) => setReqForm(prev => ({ ...prev, quantity: e.target.value }))}
-                                                required
-                                                min="1"
-                                                step="0.01"
-                                                className="w-full px-3 py-2 border border-slate-200 rounded-lg"
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Unidad</label>
-                                            <select
-                                                value={reqForm.unit}
-                                                onChange={(e) => setReqForm(prev => ({ ...prev, unit: e.target.value }))}
-                                                className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
-                                            >
-                                                {SUNAT_UNITS.map(u => (
-                                                    <option key={u.code} value={u.code}>{u.code} - {u.name}</option>
-                                                ))}
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Urgencia</label>
-                                            <select
-                                                value={reqForm.urgency}
-                                                onChange={(e) => setReqForm(prev => ({ ...prev, urgency: e.target.value }))}
-                                                className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
-                                            >
-                                                <option value="low">🟢 Baja</option>
-                                                <option value="medium">🟡 Media</option>
-                                                <option value="high">🔴 Alta</option>
-                                            </select>
-                                        </div>
-                                        <div className="md:col-span-4">
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Notas</label>
-                                            <input
-                                                type="text"
-                                                value={reqForm.notes}
-                                                onChange={(e) => setReqForm(prev => ({ ...prev, notes: e.target.value }))}
-                                                className="w-full px-3 py-2 border border-slate-200 rounded-lg"
-                                                placeholder="Observaciones..."
-                                            />
-                                        </div>
-                                        <div className="flex items-end">
-                                            <button
-                                                type="submit"
-                                                className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 font-medium"
-                                            >
-                                                Solicitar
-                                            </button>
-                                        </div>
-                                    </form>
-                                </div>
-                                
-                                {/* In Transit - Confirm Receipt */}
-                                {inTransitReqs.length > 0 && (
-                                    <div className="mb-6">
-                                        <h4 className="font-semibold text-slate-700 mb-3">🚚 En Tránsito - Confirmar Recepción</h4>
-                                        <div className="space-y-3">
-                                            {inTransitReqs.map(req => (
-                                                <div key={req.id} className="p-4 bg-orange-50 rounded-xl border border-orange-200">
-                                                    <div className="flex justify-between items-start">
-                                                        <div>
-                                                            <p className="font-medium">{req.item_name}</p>
-                                                            <p className="text-sm text-slate-500">{req.quantity} {req.unit}</p>
-                                                        </div>
-                                                        <button
-                                                            onClick={() => handleConfirmReceived(req.id)}
-                                                            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium"
-                                                        >
-                                                            📦 Confirmar Recepción
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-                                
-                                {/* All Requisitions */}
-                                <h4 className="font-semibold text-slate-700 mb-3">📋 Historial de Requerimientos</h4>
-                                <div className="overflow-x-auto">
-                                    <table className="w-full text-sm">
-                                        <thead className="bg-slate-100">
-                                            <tr>
-                                                <th className="px-3 py-2 text-left">Material</th>
-                                                <th className="px-3 py-2 text-center">Cantidad</th>
-                                                <th className="px-3 py-2 text-center">Urgencia</th>
-                                                <th className="px-3 py-2 text-center">Estado</th>
-                                                <th className="px-3 py-2 text-left">Fecha</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-slate-100">
-                                            {requisitions.map(req => (
-                                                <tr key={req.id} className="hover:bg-slate-50">
-                                                    <td className="px-3 py-2">{req.item_name}</td>
-                                                    <td className="px-3 py-2 text-center">{req.quantity} {req.unit}</td>
-                                                    <td className="px-3 py-2 text-center">{getUrgencyBadge(req.urgency)}</td>
-                                                    <td className="px-3 py-2 text-center">{getStatusBadge(req.status)}</td>
-                                                    <td className="px-3 py-2 text-slate-500">{formatDate(req.requested_at)}</td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </>
-                        )}
-                        
-                        {activeTab === 'evidence' && (
-                            <>
-                                <h3 className="text-lg font-semibold text-slate-800 mb-4">📷 Evidencias Fotográficas</h3>
-                                
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                    {dailyLogs.map(log => {
-                                        const boqItem = boqItems.find(b => b.id === log.boq_item_id)
-                                        const hasPhoto = log.evidence_urls?.length > 0
-                                        return (
-                                            <div key={log.id} className="bg-slate-50 rounded-xl overflow-hidden">
-                                                <div className={`h-40 ${hasPhoto ? 'bg-green-100' : 'bg-red-100'} flex items-center justify-center`}>
-                                                    {hasPhoto ? (
-                                                        <img 
-                                                            src={log.evidence_urls[0]} 
-                                                            alt="Evidence" 
-                                                            className="w-full h-full object-cover"
-                                                        />
-                                                    ) : (
-                                                        <span className="text-slate-400 text-sm">Sin evidencia</span>
-                                                    )}
-                                                </div>
-                                                <div className="p-4">
-                                                    <p className="font-medium text-sm">{boqItem?.description}</p>
-                                                    <p className="text-xs text-slate-500 mt-1">{log.notes}</p>
-                                                    <div className="flex justify-between items-center mt-2">
-                                                        <span className="text-xs text-slate-400">{formatDate(log.log_date)}</span>
-                                                        <span className={`px-2 py-1 text-xs rounded-full ${
-                                                            hasPhoto ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
-                                                        }`}>
-                                                            {hasPhoto ? '✓ Con foto' : '✗ Sin foto'}
-                                                        </span>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        )
-                                    })}
-                                </div>
-                            </>
-                        )}
-                    </div>
-                )}
-            </MainContent>
-        </>
-    )
-}
-
-// ============================================
-// LOGISTICS MODULE
-// ============================================
-function LogisticsModule() {
-    const { requisitions, updateRequisitionStatus, loading } = useApp()
-    const { addToast } = useToast()
-    const [activeTab, setActiveTab] = useState('pending')
-    const [uploadModal, setUploadModal] = useState(null)
-    const [documents, setDocuments] = useState({ factura: false, guia: false, foto: false })
-
-    const toBuyReqs = requisitions.filter(r => r.status === 'to_buy')
-    const inTransitReqs = requisitions.filter(r => r.status === 'in_transit')
-    const completedReqs = requisitions.filter(r => r.status === 'completed' || r.status === 'received')
-
-    const handlePurchase = async (reqId) => {
-        if (!documents.factura) {
-            addToast('La factura es requerida', 'warning')
-            return
-        }
-        
-        try {
-            await updateRequisitionStatus(reqId, 'in_transit', {
-                evidence_urls: {
-                    factura: documents.factura ? 'FAC-' + Date.now() + '.pdf' : null,
-                    guia_remision: documents.guia ? 'GR-' + Date.now() + '.pdf' : null,
-                    foto_material: documents.foto ? 'FOTO-' + Date.now() + '.jpg' : null
-                }
-            })
-            setUploadModal(null)
-            setDocuments({ factura: false, guia: false, foto: false })
-            addToast('Compra registrada exitosamente', 'success')
-        } catch (err) {
-            addToast('Error: ' + err.message, 'error')
-        }
-    }
-
-    const menuItems = [
-        { icon: '🛒', label: 'Por Comprar', active: activeTab === 'pending', onClick: () => setActiveTab('pending') },
-        { icon: '🚚', label: 'En Tránsito', active: activeTab === 'transit', onClick: () => setActiveTab('transit') },
-        { icon: '📦', label: 'Completados', active: activeTab === 'completed', onClick: () => setActiveTab('completed') }
-    ]
-
-    return (
-        <>
-            <MobileHeader />
-            <Sidebar menuItems={menuItems} />
-            <MainContent title="Logística - Compras" subtitle="Gestión de Requerimientos">
-                {loading ? <LoadingSpinner /> : (
-                    <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-6">
-                        {/* Stats */}
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                            <div className="bg-blue-50 rounded-xl p-4 border border-blue-100">
-                                <p className="text-sm text-blue-600 mb-1">🛒 Por Comprar</p>
-                                <p className="text-2xl font-bold text-blue-700">{toBuyReqs.length}</p>
-                            </div>
-                            <div className="bg-orange-50 rounded-xl p-4 border border-orange-100">
-                                <p className="text-sm text-orange-600 mb-1">🚚 En Tránsito</p>
-                                <p className="text-2xl font-bold text-orange-700">{inTransitReqs.length}</p>
-                            </div>
-                            <div className="bg-green-50 rounded-xl p-4 border border-green-100">
-                                <p className="text-sm text-green-600 mb-1">📦 Completados</p>
-                                <p className="text-2xl font-bold text-green-700">{completedReqs.length}</p>
-                            </div>
-                        </div>
-                        
-                        {activeTab === 'pending' && (
-                            <>
-                                <h3 className="text-lg font-semibold text-slate-800 mb-4">🛒 Requerimientos Por Comprar</h3>
-                                
-                                {toBuyReqs.length === 0 ? (
-                                    <p className="text-slate-500 text-center py-8 bg-slate-50 rounded-xl">
-                                        No hay requerimientos pendientes de compra
-                                    </p>
-                                ) : (
-                                    <div className="space-y-4">
-                                        {toBuyReqs.map(req => (
-                                            <div key={req.id} className="p-4 bg-slate-50 rounded-xl border border-slate-200">
-                                                <div className="flex justify-between items-start mb-3">
-                                                    <div>
-                                                        <p className="font-semibold text-slate-800">{req.item_name}</p>
-                                                        <p className="text-xs text-slate-400 mt-1">
-                                                            Solicitado por: {req.requester?.full_name} | {formatDate(req.requested_at)}
-                                                        </p>
-                                                    </div>
-                                                    <div className="text-right">
-                                                        <span className="font-bold text-blue-600 text-lg">
-                                                            {req.quantity} {req.unit}
-                                                        </span>
-                                                        <div className="mt-1">{getUrgencyBadge(req.urgency)}</div>
-                                                    </div>
-                                                </div>
-                                                {req.request_notes && (
-                                                    <p className="text-sm text-slate-600 mb-3 bg-white p-2 rounded">
-                                                        {req.request_notes}
-                                                    </p>
-                                                )}
-                                                <div className="flex justify-end">
-                                                    <button
-                                                        onClick={() => setUploadModal(req.id)}
-                                                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
-                                                    >
-                                                        📄 Registrar Compra
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </>
-                        )}
-                        
-                        {activeTab === 'transit' && (
-                            <>
-                                <h3 className="text-lg font-semibold text-slate-800 mb-4">🚚 En Tránsito</h3>
-                                
-                                {inTransitReqs.length === 0 ? (
-                                    <p className="text-slate-500 text-center py-8 bg-slate-50 rounded-xl">
-                                        No hay envíos en tránsito
-                                    </p>
-                                ) : (
-                                    <div className="overflow-x-auto">
-                                        <table className="w-full text-sm">
-                                            <thead className="bg-slate-100">
-                                                <tr>
-                                                    <th className="px-4 py-3 text-left">Material</th>
-                                                    <th className="px-4 py-3 text-center">Cantidad</th>
-                                                    <th className="px-4 py-3 text-center">Documentos</th>
-                                                    <th className="px-4 py-3 text-center">Fecha Compra</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-slate-100">
-                                                {inTransitReqs.map(req => (
-                                                    <tr key={req.id} className="hover:bg-slate-50">
-                                                        <td className="px-4 py-3 font-medium">{req.item_name}</td>
-                                                        <td className="px-4 py-3 text-center">{req.quantity} {req.unit}</td>
-                                                        <td className="px-4 py-3 text-center">
-                                                            <div className="flex justify-center gap-1">
-                                                                {req.evidence_urls?.factura && (
-                                                                    <span className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded-full">✅ Factura</span>
-                                                                )}
-                                                                {req.evidence_urls?.guia_remision && (
-                                                                    <span className="px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-full">✅ Guía</span>
-                                                                )}
-                                                                {req.evidence_urls?.foto_material && (
-                                                                    <span className="px-2 py-1 text-xs bg-purple-100 text-purple-700 rounded-full">✅ Foto</span>
-                                                                )}
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-4 py-3 text-center text-slate-500">
-                                                            {formatDate(req.purchased_at)}
-                                                        </td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                )}
-                            </>
-                        )}
-                        
-                        {activeTab === 'completed' && (
-                            <>
-                                <h3 className="text-lg font-semibold text-slate-800 mb-4">📦 Completados</h3>
-                                
-                                {completedReqs.length === 0 ? (
-                                    <p className="text-slate-500 text-center py-8 bg-slate-50 rounded-xl">
-                                        No hay requerimientos completados
-                                    </p>
-                                ) : (
-                                    <div className="overflow-x-auto">
-                                        <table className="w-full text-sm">
-                                            <thead className="bg-slate-100">
-                                                <tr>
-                                                    <th className="px-4 py-3 text-left">Material</th>
-                                                    <th className="px-4 py-3 text-center">Cantidad</th>
-                                                    <th className="px-4 py-3 text-center">Estado</th>
-                                                    <th className="px-4 py-3 text-center">Recibido</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-slate-100">
-                                                {completedReqs.map(req => (
-                                                    <tr key={req.id} className="hover:bg-slate-50">
-                                                        <td className="px-4 py-3 font-medium">{req.item_name}</td>
-                                                        <td className="px-4 py-3 text-center">{req.quantity} {req.unit}</td>
-                                                        <td className="px-4 py-3 text-center">{getStatusBadge(req.status)}</td>
-                                                        <td className="px-4 py-3 text-center text-green-600">
-                                                            {formatDate(req.received_at)}
-                                                        </td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                )}
-                            </>
-                        )}
-                    </div>
-                )}
-                
-                {/* Upload Modal */}
-                {uploadModal && (
-                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-                        <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl">
-                            <h3 className="text-lg font-semibold mb-4">📄 Registrar Compra</h3>
-                            
-                            <div className="space-y-3 mb-6">
-                                <div
-                                    onClick={() => setDocuments(prev => ({ ...prev, factura: !prev.factura }))}
-                                    className={`flex items-center justify-between p-3 border-2 rounded-lg cursor-pointer transition-all ${
-                                        documents.factura ? 'border-green-500 bg-green-50' : 'border-slate-200 hover:border-blue-400'
-                                    }`}
-                                >
-                                    <div className="flex items-center gap-3">
-                                        <span className="text-2xl">{documents.factura ? '✅' : '📄'}</span>
-                                        <div>
-                                            <p className="font-medium text-slate-800">Factura / Comprobante</p>
-                                            <p className="text-xs text-red-500">* Requerido</p>
-                                        </div>
-                                    </div>
-                                    <span className={`text-sm ${documents.factura ? 'text-green-600 font-medium' : 'text-slate-400'}`}>
-                                        {documents.factura ? 'Cargado' : 'Clic para subir'}
-                                    </span>
-                                </div>
-                                
-                                <div
-                                    onClick={() => setDocuments(prev => ({ ...prev, guia: !prev.guia }))}
-                                    className={`flex items-center justify-between p-3 border-2 rounded-lg cursor-pointer transition-all ${
-                                        documents.guia ? 'border-green-500 bg-green-50' : 'border-slate-200 hover:border-blue-400'
-                                    }`}
-                                >
-                                    <div className="flex items-center gap-3">
-                                        <span className="text-2xl">{documents.guia ? '✅' : '📋'}</span>
-                                        <div>
-                                            <p className="font-medium text-slate-800">Guía de Remisión</p>
-                                            <p className="text-xs text-slate-400">Opcional</p>
-                                        </div>
-                                    </div>
-                                    <span className={`text-sm ${documents.guia ? 'text-green-600 font-medium' : 'text-slate-400'}`}>
-                                        {documents.guia ? 'Cargado' : 'Clic para subir'}
-                                    </span>
-                                </div>
-                                
-                                <div
-                                    onClick={() => setDocuments(prev => ({ ...prev, foto: !prev.foto }))}
-                                    className={`flex items-center justify-between p-3 border-2 rounded-lg cursor-pointer transition-all ${
-                                        documents.foto ? 'border-green-500 bg-green-50' : 'border-slate-200 hover:border-blue-400'
-                                    }`}
-                                >
-                                    <div className="flex items-center gap-3">
-                                        <span className="text-2xl">{documents.foto ? '✅' : '📷'}</span>
-                                        <div>
-                                            <p className="font-medium text-slate-800">Foto del Material</p>
-                                            <p className="text-xs text-slate-400">Opcional</p>
-                                        </div>
-                                    </div>
-                                    <span className={`text-sm ${documents.foto ? 'text-green-600 font-medium' : 'text-slate-400'}`}>
-                                        {documents.foto ? 'Cargado' : 'Clic para subir'}
-                                    </span>
-                                </div>
-                            </div>
-                            
-                            <div className="flex gap-3">
-                                <button
-                                    onClick={() => {
-                                        setUploadModal(null)
-                                        setDocuments({ factura: false, guia: false, foto: false })
-                                    }}
-                                    className="flex-1 px-4 py-2 border border-slate-200 rounded-lg hover:bg-slate-50"
-                                >
-                                    Cancelar
-                                </button>
-                                <button
-                                    onClick={() => handlePurchase(uploadModal)}
-                                    className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium"
-                                >
-                                    ✓ Confirmar Compra
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                )}
-            </MainContent>
-        </>
-    )
-}
-
-// ============================================
-// CEO MODULE (Simplified for brevity)
-// ============================================
-function CEOModule() {
-    const { projects, loading, settings } = useApp()
-    
-    if (loading) {
-        return <LoadingSpinner message="Cargando dashboard..." />
-    }
-    
-    const totalBudget = projects.reduce((s, p) => s + (p.budget || 0), 0)
-    const totalSpent = projects.reduce((s, p) => s + (p.spent || 0), 0)
-    const avgProgress = projects.length > 0 
-        ? Math.round(projects.reduce((s, p) => s + (p.progress || 0), 0) / projects.length) 
-        : 0
-
-    const menuItems = [
-        { icon: '📊', label: 'Dashboard', active: true, onClick: () => {} },
-        { icon: '📈', label: 'Imprimir Reporte', active: false, onClick: () => window.print() }
-    ]
-
-    return (
-        <>
-            <MobileHeader />
-            <Sidebar menuItems={menuItems} />
-            <MainContent title="Dashboard Ejecutivo" subtitle="Portafolio de Proyectos - Vista Global">
-                {/* KPIs */}
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-                    <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
-                        <p className="text-sm text-slate-500 mb-1">Proyectos Activos</p>
-                        <p className="text-3xl font-bold text-blue-600">
-                            {projects.filter(p => p.status === 'active').length}
-                        </p>
-                    </div>
-                    <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
-                        <p className="text-sm text-slate-500 mb-1">Presupuesto Total</p>
-                        <p className="text-xl font-bold text-slate-800 truncate">{formatCurrency(totalBudget)}</p>
-                    </div>
-                    <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
-                        <p className="text-sm text-slate-500 mb-1">Ejecutado</p>
-                        <p className="text-xl font-bold text-green-600 truncate">{formatCurrency(totalSpent)}</p>
-                    </div>
-                    <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
-                        <p className="text-sm text-slate-500 mb-1">Avance Promedio</p>
-                        <p className="text-3xl font-bold text-purple-600">{avgProgress}%</p>
-                    </div>
+                      <img
+                        src={photo.url}
+                        alt={`Evidencia ${idx + 1}`}
+                        className="w-full h-24 object-cover hover:opacity-80 transition"
+                      />
+                    </a>
+                  ))}
                 </div>
-                
-                {/* Projects Grid */}
-                <h2 className="text-lg font-semibold text-slate-800 mb-4">Proyectos del Portafolio</h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {projects.map(project => {
-                        const progressColor = (project.progress || 0) >= 75 ? 'bg-green-500' 
-                            : (project.progress || 0) >= 50 ? 'bg-blue-500' 
-                            : (project.progress || 0) >= 25 ? 'bg-yellow-500' 
-                            : 'bg-red-500'
-                        
-                        return (
-                            <div key={project.id} className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
-                                <div className="flex justify-between items-start mb-3">
-                                    <div>
-                                        <h3 className="font-semibold text-slate-800">{project.name}</h3>
-                                        <p className="text-sm text-slate-500">{project.code}</p>
-                                    </div>
-                                    <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                                        project.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-700'
-                                    }`}>
-                                        {project.status === 'active' ? '● Activo' : project.status}
-                                    </span>
-                                </div>
-                                <p className="text-sm text-slate-600 mb-3">{project.client_name}</p>
-                                <div className="mb-3">
-                                    <div className="flex justify-between text-sm mb-1">
-                                        <span className="text-slate-500">Avance</span>
-                                        <span className="font-medium">{project.progress || 0}%</span>
-                                    </div>
-                                    <div className="w-full bg-slate-200 rounded-full h-2">
-                                        <div 
-                                            className={`h-2 rounded-full ${progressColor}`} 
-                                            style={{ width: `${project.progress || 0}%` }}
-                                        ></div>
-                                    </div>
-                                </div>
-                                <div className="flex justify-between text-sm">
-                                    <div>
-                                        <p className="text-slate-500">Presupuesto</p>
-                                        <p className="font-semibold text-slate-800 truncate">{formatCurrency(project.budget)}</p>
-                                    </div>
-                                    <div className="text-right">
-                                        <p className="text-slate-500">Ejecutado</p>
-                                        <p className="font-semibold text-green-600 truncate">{formatCurrency(project.spent || 0)}</p>
-                                    </div>
-                                </div>
-                            </div>
-                        )
-                    })}
-                </div>
-            </MainContent>
-        </>
-    )
-}
-
-// ============================================
-// PM MODULE (Simplified for brevity)
-// ============================================
-function PMModule() {
-    const { currentProject, boqItems, createBoqItem, updateBoqItem, loading } = useApp()
-    const { addToast } = useToast()
-    const [activeTab, setActiveTab] = useState('boq')
-    const [showAddForm, setShowAddForm] = useState(false)
-    const [newItem, setNewItem] = useState({
-        code: '',
-        description: '',
-        unit: 'UND',
-        category: 'estructuras',
-        totalMetrado: '',
-        unitPrice: ''
-    })
-
-    const handleAddItem = async (e) => {
-        e.preventDefault()
-        try {
-            await createBoqItem(newItem)
-            setShowAddForm(false)
-            setNewItem({
-                code: '',
-                description: '',
-                unit: 'UND',
-                category: 'estructuras',
-                totalMetrado: '',
-                unitPrice: ''
-            })
-            addToast('Partida agregada correctamente', 'success')
-        } catch (err) {
-            addToast('Error: ' + err.message, 'error')
-        }
-    }
-
-    const menuItems = [
-        { icon: '📋', label: 'Gestión BOQ', active: activeTab === 'boq', onClick: () => setActiveTab('boq') },
-        { icon: '📊', label: 'Avance', active: activeTab === 'progress', onClick: () => setActiveTab('progress') },
-        { icon: '🔧', label: 'Recursos', active: activeTab === 'resources', onClick: () => setActiveTab('resources') }
-    ]
-
-    if (!currentProject) {
-        return (
-            <>
-                <MobileHeader />
-                <ProjectSelector 
-                    title="Gestión de Proyectos" 
-                    subtitle="Seleccione un proyecto para gestionar"
-                />
-            </>
-        )
-    }
-
-    const totalBudget = boqItems.reduce((s, i) => s + (i.total_metrado * i.unit_price), 0)
-
-    return (
-        <>
-            <MobileHeader />
-            <Sidebar menuItems={menuItems} />
-            <MainContent 
-                title={currentProject.name} 
-                subtitle="Gestión de Expediente Técnico"
-                showBackButton
-            >
-                {loading ? <LoadingSpinner /> : (
-                    <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-6">
-                        {activeTab === 'boq' && (
-                            <>
-                                <div className="flex justify-between items-center mb-6">
-                                    <div>
-                                        <h3 className="text-lg font-semibold text-slate-800">📋 Gestión de Expediente Técnico (BOQ)</h3>
-                                        <p className="text-sm text-slate-500">Presupuesto Total: {formatCurrency(totalBudget)}</p>
-                                    </div>
-                                    <button
-                                        onClick={() => setShowAddForm(!showAddForm)}
-                                        className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 text-sm"
-                                    >
-                                        ➕ Agregar Partida
-                                    </button>
-                                </div>
-                                
-                                {showAddForm && (
-                                    <div className="mb-6 p-4 bg-blue-50 rounded-xl border border-blue-200">
-                                        <h4 className="font-semibold text-blue-800 mb-4">Nueva Partida</h4>
-                                        <form onSubmit={handleAddItem} className="grid grid-cols-1 md:grid-cols-6 gap-4">
-                                            <div>
-                                                <label className="block text-xs font-medium text-slate-600 mb-1">Código</label>
-                                                <input
-                                                    type="text"
-                                                    value={newItem.code}
-                                                    onChange={(e) => setNewItem(prev => ({ ...prev, code: e.target.value }))}
-                                                    required
-                                                    className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
-                                                    placeholder="EST-001"
-                                                />
-                                            </div>
-                                            <div className="md:col-span-2">
-                                                <label className="block text-xs font-medium text-slate-600 mb-1">Descripción</label>
-                                                <input
-                                                    type="text"
-                                                    value={newItem.description}
-                                                    onChange={(e) => setNewItem(prev => ({ ...prev, description: e.target.value }))}
-                                                    required
-                                                    className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-medium text-slate-600 mb-1">Unidad</label>
-                                                <select
-                                                    value={newItem.unit}
-                                                    onChange={(e) => setNewItem(prev => ({ ...prev, unit: e.target.value }))}
-                                                    className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
-                                                >
-                                                    {SUNAT_UNITS.map(u => (
-                                                        <option key={u.code} value={u.code}>{u.code}</option>
-                                                    ))}
-                                                </select>
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-medium text-slate-600 mb-1">Metrado</label>
-                                                <input
-                                                    type="number"
-                                                    value={newItem.totalMetrado}
-                                                    onChange={(e) => setNewItem(prev => ({ ...prev, totalMetrado: e.target.value }))}
-                                                    required
-                                                    min="0"
-                                                    step="0.01"
-                                                    className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-medium text-slate-600 mb-1">P.U.</label>
-                                                <input
-                                                    type="number"
-                                                    value={newItem.unitPrice}
-                                                    onChange={(e) => setNewItem(prev => ({ ...prev, unitPrice: e.target.value }))}
-                                                    required
-                                                    min="0"
-                                                    step="0.01"
-                                                    className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
-                                                />
-                                            </div>
-                                            <div className="md:col-span-6 flex gap-2">
-                                                <button type="submit" className="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700">
-                                                    ✓ Guardar
-                                                </button>
-                                                <button 
-                                                    type="button" 
-                                                    onClick={() => setShowAddForm(false)}
-                                                    className="bg-slate-200 px-4 py-2 rounded-lg hover:bg-slate-300"
-                                                >
-                                                    Cancelar
-                                                </button>
-                                            </div>
-                                        </form>
-                                    </div>
-                                )}
-                                
-                                <div className="overflow-x-auto">
-                                    <table className="w-full text-sm">
-                                        <thead className="bg-slate-100">
-                                            <tr>
-                                                <th className="px-4 py-2 text-left">Código</th>
-                                                <th className="px-4 py-2 text-left">Descripción</th>
-                                                <th className="px-4 py-2 text-center">Unidad</th>
-                                                <th className="px-4 py-2 text-right">Metrado</th>
-                                                <th className="px-4 py-2 text-right">P.U.</th>
-                                                <th className="px-4 py-2 text-right">Parcial</th>
-                                                <th className="px-4 py-2 text-center">Avance</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-slate-100">
-                                            {boqItems.map(item => (
-                                                <tr key={item.id} className="hover:bg-slate-50">
-                                                    <td className="px-4 py-2 font-mono text-blue-600">{item.code}</td>
-                                                    <td className="px-4 py-2">{item.description}</td>
-                                                    <td className="px-4 py-2 text-center text-slate-500">{item.unit}</td>
-                                                    <td className="px-4 py-2 text-right font-mono">{item.total_metrado?.toLocaleString()}</td>
-                                                    <td className="px-4 py-2 text-right font-mono">{item.unit_price?.toFixed(2)}</td>
-                                                    <td className="px-4 py-2 text-right font-medium">
-                                                        {formatCurrency(item.total_metrado * item.unit_price)}
-                                                    </td>
-                                                    <td className="px-4 py-2 text-center">
-                                                        <span className={`px-2 py-1 text-xs rounded-full ${
-                                                            (item.progress || 0) >= 75 ? 'bg-green-100 text-green-700' 
-                                                            : (item.progress || 0) >= 50 ? 'bg-blue-100 text-blue-700' 
-                                                            : 'bg-orange-100 text-orange-700'
-                                                        }`}>
-                                                            {item.progress || 0}%
-                                                        </span>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </>
-                        )}
-                    </div>
+                {report.notes && (
+                  <div className="p-3 bg-gray-50 text-sm text-gray-600">
+                    {report.notes}
+                  </div>
                 )}
-            </MainContent>
-        </>
-    )
-}
-
-// ============================================
-// ADMIN MODULE - FULLY FUNCTIONAL
-// ============================================
-function AdminModule() {
-    const { settings, loading, projects, refreshProjects, setError } = useApp()
-    const { addToast } = useToast()
-    const [activeTab, setActiveTab] = useState('personal')
-    const [users, setUsers] = useState([])
-    const [userAssignments, setUserAssignments] = useState({}) // userId -> [projectIds]
-    const [loadingUsers, setLoadingUsers] = useState(false)
-    const [showPasswords, setShowPasswords] = useState({})
-    const [editingUser, setEditingUser] = useState(null)
-    const [editUserForm, setEditUserForm] = useState({ role: '', assignedProjects: [] })
-    const [createdUserModal, setCreatedUserModal] = useState(null) // { email, fullName, password }
-    const [deleteConfirmUser, setDeleteConfirmUser] = useState(null)
-    const [editingProject, setEditingProject] = useState(null)
-    const [showActiveOnly, setShowActiveOnly] = useState(true)
-    
-    // New User Form State
-    const [newUser, setNewUser] = useState({
-        email: '',
-        fullName: '',
-        role: 'foreman',
-        password: '',
-        assignedProjects: []
-    })
-    
-    // New Project Form State
-    const [newProject, setNewProject] = useState({
-        code: '',
-        name: '',
-        clientName: '',
-        location: '',
-        budget: '',
-        startDate: '',
-        endDate: ''
-    })
-    const [showProjectForm, setShowProjectForm] = useState(false)
-    
-    // Settings Form State
-    const [settingsForm, setSettingsForm] = useState({
-        companyName: settings.companyName,
-        logoUrl: settings.logoUrl,
-        currency: settings.currency,
-        taxRate: settings.taxRate
-    })
-    
-    // Load users on mount
-    useEffect(() => {
-        loadUsers()
-    }, [])
-    
-    // Update settings form when settings change
-    useEffect(() => {
-        setSettingsForm({
-            companyName: settings.companyName,
-            logoUrl: settings.logoUrl,
-            currency: settings.currency,
-            taxRate: settings.taxRate
-        })
-    }, [settings])
-    
-    // Load users from database
-    const loadUsers = async () => {
-        setLoadingUsers(true)
-        try {
-            const { data, error } = await supabase
-                .from('profiles')
-                .select('*')
-                .order('created_at', { ascending: false })
-            
-            if (error) throw error
-            setUsers(data || [])
-            
-            // Load project assignments for all users
-            const { data: assignments, error: assignError } = await supabase
-                .from('project_assignments')
-                .select('profile_id, project_id')
-                .eq('is_active', true)
-            
-            if (!assignError && assignments) {
-                const assignmentMap = {}
-                assignments.forEach(a => {
-                    if (!assignmentMap[a.profile_id]) {
-                        assignmentMap[a.profile_id] = []
-                    }
-                    assignmentMap[a.profile_id].push(a.project_id)
-                })
-                setUserAssignments(assignmentMap)
-            }
-        } catch (err) {
-            console.error('Error loading users:', err)
-            setError(err.message)
-        } finally {
-            setLoadingUsers(false)
-        }
-    }
-    
-    // Generate random password
-    const generatePassword = () => {
-        const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-        let password = ''
-        for (let i = 0; i < 10; i++) {
-            password += chars.charAt(Math.floor(Math.random() * chars.length))
-        }
-        return password
-    }
-    
-    // Create new user
-    const handleCreateUser = async (e) => {
-        e.preventDefault()
-        
-        try {
-            setLoadingUsers(true)
-            
-            // Generate password if not provided
-            const password = newUser.password || generatePassword()
-            
-            // Create auth user using admin API
-            const { data: authData, error: authError } = await supabase.auth.signUp({
-                email: newUser.email,
-                password: password,
-                options: {
-                    data: {
-                        full_name: newUser.fullName,
-                        role: newUser.role
-                    }
-                }
-            })
-            
-            if (authError) throw authError
-            
-            if (authData.user) {
-                // Force update profile with correct role
-                const { error: profileError } = await supabase
-                    .from('profiles')
-                    .upsert({
-                        id: authData.user.id,
-                        email: newUser.email,
-                        full_name: newUser.fullName,
-                        role: newUser.role,
-                        is_active: true
-                    })
-                
-                if (profileError) {
-                    console.error('Profile update error:', profileError)
-                    throw profileError
-                }
-                
-                // Insert project assignments immediately
-                if (newUser.assignedProjects.length > 0) {
-                    const assignments = newUser.assignedProjects.map(projectId => ({
-                        profile_id: authData.user.id,
-                        project_id: projectId,
-                        is_active: true,
-                        permissions: { read: true, write: true }
-                    }))
-                    
-                    const { error: assignError } = await supabase
-                        .from('project_assignments')
-                        .insert(assignments)
-                    
-                    if (assignError) console.error('Assignment error:', assignError)
-                }
-            }
-            
-            // Show password modal with copy functionality
-            setCreatedUserModal({
-                email: newUser.email,
-                fullName: newUser.fullName,
-                password: password
-            })
-            
-            // Reset form
-            setNewUser({
-                email: '',
-                fullName: '',
-                role: 'foreman',
-                password: '',
-                assignedProjects: []
-            })
-            
-            // Reload users
-            await loadUsers()
-            
-        } catch (err) {
-            addToast('Error al crear usuario: ' + err.message, 'error')
-        } finally {
-            setLoadingUsers(false)
-        }
-    }
-    
-    // Edit user - open modal
-    const handleOpenEditUser = (user) => {
-        setEditingUser(user)
-        setEditUserForm({
-            role: user.role,
-            assignedProjects: userAssignments[user.id] || []
-        })
-    }
-    
-    // Update user role and assignments
-    const handleUpdateUser = async (e) => {
-        e.preventDefault()
-        
-        try {
-            setLoadingUsers(true)
-            
-            // Update profile role
-            const { error: profileError } = await supabase
-                .from('profiles')
-                .update({ role: editUserForm.role })
-                .eq('id', editingUser.id)
-            
-            if (profileError) throw profileError
-            
-            // Delete all existing assignments for this user
-            await supabase
-                .from('project_assignments')
-                .delete()
-                .eq('profile_id', editingUser.id)
-            
-            // Insert new assignments
-            if (editUserForm.assignedProjects.length > 0) {
-                const assignments = editUserForm.assignedProjects.map(projectId => ({
-                    profile_id: editingUser.id,
-                    project_id: projectId,
-                    is_active: true,
-                    permissions: { read: true, write: true }
-                }))
-                
-                const { error: assignError } = await supabase
-                    .from('project_assignments')
-                    .insert(assignments)
-                
-                if (assignError) throw assignError
-            }
-            
-            addToast('Usuario actualizado correctamente', 'success')
-            setEditingUser(null)
-            await loadUsers()
-            
-        } catch (err) {
-            addToast('Error: ' + err.message, 'error')
-        } finally {
-            setLoadingUsers(false)
-        }
-    }
-    
-    // Deactivate user (soft delete)
-    const handleDeactivateUser = async (userId) => {
-        try {
-            setLoadingUsers(true)
-            
-            const { error } = await supabase
-                .from('profiles')
-                .update({ is_active: false })
-                .eq('id', userId)
-            
-            if (error) throw error
-            
-            addToast('Usuario desactivado', 'success')
-            setDeleteConfirmUser(null)
-            await loadUsers()
-            
-        } catch (err) {
-            addToast('Error: ' + err.message, 'error')
-        } finally {
-            setLoadingUsers(false)
-        }
-    }
-    
-    // Reactivate user
-    const handleReactivateUser = async (userId) => {
-        try {
-            setLoadingUsers(true)
-            
-            const { error } = await supabase
-                .from('profiles')
-                .update({ is_active: true })
-                .eq('id', userId)
-            
-            if (error) throw error
-            
-            addToast('Usuario reactivado', 'success')
-            await loadUsers()
-            
-        } catch (err) {
-            addToast('Error: ' + err.message, 'error')
-        } finally {
-            setLoadingUsers(false)
-        }
-    }
-    
-    // Toggle edit project assignment
-    const toggleEditProjectAssignment = (projectId) => {
-        setEditUserForm(prev => ({
-            ...prev,
-            assignedProjects: prev.assignedProjects.includes(projectId)
-                ? prev.assignedProjects.filter(id => id !== projectId)
-                : [...prev.assignedProjects, projectId]
-        }))
-    }
-    
-    // Send password reset email
-    const handleSendPasswordReset = async (email) => {
-        try {
-            const { error } = await supabase.auth.resetPasswordForEmail(email, {
-                redirectTo: window.location.origin
-            })
-            
-            if (error) throw error
-            
-            addToast(`Email de recuperación enviado a ${email}`, 'success')
-        } catch (err) {
-            addToast('Error: ' + err.message, 'error')
-        }
-    }
-    
-    // Toggle password visibility
-    const togglePassword = (userId) => {
-        setShowPasswords(prev => ({ ...prev, [userId]: !prev[userId] }))
-    }
-    
-    // Create new project
-    const handleCreateProject = async (e) => {
-        e.preventDefault()
-        
-        try {
-            setLoadingUsers(true)
-            
-            const { data, error } = await supabase
-                .from('projects')
-                .insert({
-                    code: newProject.code,
-                    name: newProject.name,
-                    client_name: newProject.clientName,
-                    location: newProject.location,
-                    budget: parseFloat(newProject.budget) || 0,
-                    start_date: newProject.startDate || null,
-                    end_date: newProject.endDate || null,
-                    status: 'active',
-                    progress: 0,
-                    spent: 0
-                })
-                .select()
-                .single()
-            
-            if (error) throw error
-            
-            addToast('Proyecto creado exitosamente', 'success')
-            
-            // Reset form
-            setNewProject({
-                code: '',
-                name: '',
-                clientName: '',
-                location: '',
-                budget: '',
-                startDate: '',
-                endDate: ''
-            })
-            setShowProjectForm(false)
-            
-            // Refresh projects list
-            await refreshProjects()
-            
-        } catch (err) {
-            addToast('Error al crear proyecto: ' + err.message, 'error')
-        } finally {
-            setLoadingUsers(false)
-        }
-    }
-    
-    // Update project
-    const handleUpdateProject = async (e) => {
-        e.preventDefault()
-        
-        try {
-            setLoadingUsers(true)
-            
-            const { error } = await supabase
-                .from('projects')
-                .update({
-                    name: editingProject.name,
-                    client_name: editingProject.client_name,
-                    location: editingProject.location,
-                    budget: parseFloat(editingProject.budget) || 0,
-                    status: editingProject.status
-                })
-                .eq('id', editingProject.id)
-            
-            if (error) throw error
-            
-            addToast('Proyecto actualizado', 'success')
-            setEditingProject(null)
-            await refreshProjects()
-            
-        } catch (err) {
-            addToast('Error: ' + err.message, 'error')
-        } finally {
-            setLoadingUsers(false)
-        }
-    }
-    
-    // Delete/Deactivate project
-    const handleDeactivateProject = async (projectId) => {
-        if (!confirm('¿Está seguro de desactivar este proyecto?')) return
-        
-        try {
-            const { error } = await supabase
-                .from('projects')
-                .update({ status: 'cancelled' })
-                .eq('id', projectId)
-            
-            if (error) throw error
-            
-            await refreshProjects()
-            addToast('Proyecto desactivado', 'success')
-        } catch (err) {
-            addToast('Error: ' + err.message, 'error')
-        }
-    }
-    
-    // Save settings
-    const handleSaveSettings = async () => {
-        try {
-            const { error } = await supabase
-                .from('companies')
-                .update({
-                    name: settingsForm.companyName,
-                    logo_url: settingsForm.logoUrl,
-                    currency: settingsForm.currency,
-                    tax_rate: settingsForm.taxRate
-                })
-                .eq('id', '00000000-0000-0000-0000-000000000001')
-            
-            if (error) throw error
-            
-            addToast('Configuración guardada correctamente', 'success')
-        } catch (err) {
-            addToast('Error: ' + err.message, 'error')
-        }
-    }
-    
-    // Copy to clipboard
-    const copyToClipboard = (text) => {
-        navigator.clipboard.writeText(text).then(() => {
-            addToast('Copiado al portapapeles', 'info')
-        })
-    }
-    
-    // Toggle project assignment for user
-    const toggleProjectAssignment = (projectId) => {
-        setNewUser(prev => ({
-            ...prev,
-            assignedProjects: prev.assignedProjects.includes(projectId)
-                ? prev.assignedProjects.filter(id => id !== projectId)
-                : [...prev.assignedProjects, projectId]
-        }))
-    }
-
-    const menuItems = [
-        { icon: '👥', label: 'Personal', active: activeTab === 'personal', onClick: () => setActiveTab('personal') },
-        { icon: '🔐', label: 'Credenciales', active: activeTab === 'credentials', onClick: () => setActiveTab('credentials') },
-        { icon: '📁', label: 'Proyectos', active: activeTab === 'projects', onClick: () => setActiveTab('projects') },
-        { icon: '⚙️', label: 'Configuración', active: activeTab === 'settings', onClick: () => setActiveTab('settings') }
-    ]
-
-    return (
-        <>
-            <MobileHeader />
-            <Sidebar menuItems={menuItems} />
-            <MainContent title="Panel de Administración" subtitle="Gestión de usuarios, proyectos y configuración">
-                {loading ? <LoadingSpinner /> : (
-                    <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-6">
-                        
-                        {/* PERSONAL TAB */}
-                        {activeTab === 'personal' && (
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                                {/* Create User Form */}
-                                <div>
-                                    <h3 className="text-lg font-semibold text-slate-800 mb-4">➕ Crear Nuevo Usuario</h3>
-                                    <form onSubmit={handleCreateUser} className="space-y-4 bg-slate-50 p-6 rounded-xl">
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Email *</label>
-                                            <input
-                                                type="email"
-                                                value={newUser.email}
-                                                onChange={(e) => setNewUser(prev => ({ ...prev, email: e.target.value }))}
-                                                required
-                                                className="w-full px-4 py-2.5 border border-slate-200 rounded-lg bg-white"
-                                                placeholder="usuario@empresa.com"
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Nombre Completo *</label>
-                                            <input
-                                                type="text"
-                                                value={newUser.fullName}
-                                                onChange={(e) => setNewUser(prev => ({ ...prev, fullName: e.target.value }))}
-                                                required
-                                                className="w-full px-4 py-2.5 border border-slate-200 rounded-lg bg-white"
-                                                placeholder="Juan Pérez"
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Rol *</label>
-                                            <select
-                                                value={newUser.role}
-                                                onChange={(e) => setNewUser(prev => ({ ...prev, role: e.target.value }))}
-                                                className="w-full px-4 py-2.5 border border-slate-200 rounded-lg bg-white"
-                                            >
-                                                <option value="foreman">🔧 Maestro de Obra</option>
-                                                <option value="engineer">👷 Ing. Residente</option>
-                                                <option value="pm">📋 Project Manager</option>
-                                                <option value="logistics">📦 Logística</option>
-                                                <option value="ceo">👩‍💼 CEO</option>
-                                                <option value="admin">👤 Administrador</option>
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">
-                                                Contraseña <span className="text-slate-400">(dejar vacío para auto-generar)</span>
-                                            </label>
-                                            <input
-                                                type="text"
-                                                value={newUser.password}
-                                                onChange={(e) => setNewUser(prev => ({ ...prev, password: e.target.value }))}
-                                                className="w-full px-4 py-2.5 border border-slate-200 rounded-lg bg-white"
-                                                placeholder="Auto-generada si vacía"
-                                            />
-                                        </div>
-                                        
-                                        {/* Project Assignment - Grid Layout */}
-                                        {['pm', 'engineer', 'foreman'].includes(newUser.role) && (
-                                            <div>
-                                                <label className="block text-sm font-medium text-slate-700 mb-2">Asignar Proyectos</label>
-                                                <div className="max-h-48 overflow-y-auto p-3 bg-white border border-slate-200 rounded-lg">
-                                                    {projects.length === 0 ? (
-                                                        <p className="text-sm text-slate-400">No hay proyectos disponibles</p>
-                                                    ) : (
-                                                        <div className="grid grid-cols-1 gap-2">
-                                                            {projects.filter(p => p.status === 'active').map(project => (
-                                                                <label key={project.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-slate-50 cursor-pointer">
-                                                                    <input
-                                                                        type="checkbox"
-                                                                        checked={newUser.assignedProjects.includes(project.id)}
-                                                                        onChange={() => toggleProjectAssignment(project.id)}
-                                                                        className="rounded text-blue-600 w-4 h-4"
-                                                                    />
-                                                                    <div className="flex-1">
-                                                                        <p className="text-sm font-medium">{project.name}</p>
-                                                                        <p className="text-xs text-slate-400">{project.code}</p>
-                                                                    </div>
-                                                                </label>
-                                                            ))}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        )}
-                                        
-                                        <button
-                                            type="submit"
-                                            disabled={loadingUsers}
-                                            className="w-full bg-blue-600 text-white py-2.5 rounded-lg hover:bg-blue-700 font-medium disabled:opacity-50"
-                                        >
-                                            {loadingUsers ? 'Creando...' : '✓ Crear Usuario'}
-                                        </button>
-                                    </form>
-                                </div>
-                                
-                                {/* Users List */}
-                                <div>
-                                    <div className="flex justify-between items-center mb-4">
-                                        <h3 className="text-lg font-semibold text-slate-800">👥 Usuarios Registrados</h3>
-                                        <label className="flex items-center gap-2 text-sm cursor-pointer">
-                                            <input
-                                                type="checkbox"
-                                                checked={showActiveOnly}
-                                                onChange={() => setShowActiveOnly(!showActiveOnly)}
-                                                className="rounded text-blue-600"
-                                            />
-                                            <span>Solo activos</span>
-                                        </label>
-                                    </div>
-                                    {loadingUsers ? <LoadingSpinner message="Cargando usuarios..." /> : (
-                                        <div className="space-y-3 max-h-[500px] overflow-y-auto">
-                                            {users.filter(u => showActiveOnly ? u.is_active !== false : true).length === 0 ? (
-                                                <p className="text-slate-500 text-center py-8">No hay usuarios registrados</p>
-                                            ) : (
-                                                users.filter(u => showActiveOnly ? u.is_active !== false : true).map(user => (
-                                                    <div key={user.id} className={`p-4 rounded-xl border ${user.is_active === false ? 'bg-slate-100 border-slate-200 opacity-60' : 'bg-slate-50 border-slate-100'}`}>
-                                                        <div className="flex items-center justify-between">
-                                                            <div className="flex items-center gap-3">
-                                                                <div className="w-12 h-12 bg-gradient-to-br from-slate-200 to-slate-300 rounded-full flex items-center justify-center text-xl">
-                                                                    {user.avatar_url ? (
-                                                                        <img src={user.avatar_url} alt="" className="w-full h-full rounded-full object-cover" />
-                                                                    ) : (
-                                                                        user.full_name?.charAt(0)?.toUpperCase() || '👤'
-                                                                    )}
-                                                                </div>
-                                                                <div>
-                                                                    <p className="font-medium text-slate-800">{user.full_name}</p>
-                                                                    <p className="text-sm text-slate-500">{user.email}</p>
-                                                                    {userAssignments[user.id]?.length > 0 && (
-                                                                        <p className="text-xs text-blue-600 mt-0.5">
-                                                                            📁 {userAssignments[user.id].length} proyecto(s) asignado(s)
-                                                                        </p>
-                                                                    )}
-                                                                </div>
-                                                            </div>
-                                                            <div className="flex items-center gap-2">
-                                                                <span className={`px-3 py-1 text-xs font-medium rounded-full ${getRoleColor(user.role)}`}>
-                                                                    {getRoleName(user.role)}
-                                                                </span>
-                                                                {user.is_active === false && (
-                                                                    <span className="px-2 py-1 text-xs font-medium rounded-full bg-red-100 text-red-700">
-                                                                        Inactivo
-                                                                    </span>
-                                                                )}
-                                                            </div>
-                                                        </div>
-                                                        
-                                                        {/* Action Buttons */}
-                                                        <div className="flex gap-2 mt-3 pt-3 border-t border-slate-200">
-                                                            <button
-                                                                onClick={() => handleOpenEditUser(user)}
-                                                                className="flex-1 text-sm py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 font-medium"
-                                                            >
-                                                                ✏️ Editar
-                                                            </button>
-                                                            {user.is_active === false ? (
-                                                                <button
-                                                                    onClick={() => handleReactivateUser(user.id)}
-                                                                    className="flex-1 text-sm py-2 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 font-medium"
-                                                                >
-                                                                    ↩️ Reactivar
-                                                                </button>
-                                                            ) : (
-                                                                <button
-                                                                    onClick={() => setDeleteConfirmUser(user)}
-                                                                    className="flex-1 text-sm py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 font-medium"
-                                                                >
-                                                                    🗑️ Desactivar
-                                                                </button>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                ))
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        )}
-                        
-                        {/* Created User Modal - Copy Password */}
-                        {createdUserModal && (
-                            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-                                <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl">
-                                    <div className="text-center mb-6">
-                                        <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                                            <span className="text-3xl">✅</span>
-                                        </div>
-                                        <h3 className="text-xl font-bold text-slate-800">Usuario Creado</h3>
-                                        <p className="text-slate-500 mt-1">Guarde estas credenciales</p>
-                                    </div>
-                                    
-                                    <div className="space-y-4 mb-6">
-                                        <div className="p-4 bg-slate-50 rounded-xl">
-                                            <p className="text-sm text-slate-500 mb-1">Nombre</p>
-                                            <p className="font-medium text-slate-800">{createdUserModal.fullName}</p>
-                                        </div>
-                                        <div className="p-4 bg-slate-50 rounded-xl">
-                                            <p className="text-sm text-slate-500 mb-1">Email</p>
-                                            <div className="flex items-center justify-between">
-                                                <p className="font-medium text-slate-800">{createdUserModal.email}</p>
-                                                <button
-                                                    onClick={() => {
-                                                        navigator.clipboard.writeText(createdUserModal.email)
-                                                        addToast('Email copiado', 'info')
-                                                    }}
-                                                    className="text-blue-600 text-sm hover:underline"
-                                                >
-                                                    📋 Copiar
-                                                </button>
-                                            </div>
-                                        </div>
-                                        <div className="p-4 bg-green-50 rounded-xl border-2 border-green-200">
-                                            <p className="text-sm text-green-600 mb-1">🔐 Contraseña</p>
-                                            <div className="flex items-center justify-between">
-                                                <code className="font-mono text-lg font-bold text-green-700">{createdUserModal.password}</code>
-                                                <button
-                                                    onClick={() => {
-                                                        navigator.clipboard.writeText(createdUserModal.password)
-                                                        addToast('Contraseña copiada', 'success')
-                                                    }}
-                                                    className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700"
-                                                >
-                                                    📋 Copiar
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    
-                                    <button
-                                        onClick={() => setCreatedUserModal(null)}
-                                        className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold hover:bg-blue-700"
-                                    >
-                                        ✓ Entendido, Cerrar
-                                    </button>
-                                </div>
-                            </div>
-                        )}
-                        
-                        {/* Edit User Modal */}
-                        {editingUser && (
-                            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-                                <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl">
-                                    <h3 className="text-lg font-bold text-slate-800 mb-4">✏️ Editar Usuario</h3>
-                                    
-                                    <div className="flex items-center gap-3 p-4 bg-slate-50 rounded-xl mb-4">
-                                        <div className="w-12 h-12 bg-gradient-to-br from-slate-200 to-slate-300 rounded-full flex items-center justify-center text-xl">
-                                            {editingUser.full_name?.charAt(0)?.toUpperCase() || '👤'}
-                                        </div>
-                                        <div>
-                                            <p className="font-medium text-slate-800">{editingUser.full_name}</p>
-                                            <p className="text-sm text-slate-500">{editingUser.email}</p>
-                                        </div>
-                                    </div>
-                                    
-                                    <form onSubmit={handleUpdateUser} className="space-y-4">
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Rol</label>
-                                            <select
-                                                value={editUserForm.role}
-                                                onChange={(e) => setEditUserForm(prev => ({ ...prev, role: e.target.value }))}
-                                                className="w-full px-4 py-2.5 border border-slate-200 rounded-lg bg-white"
-                                            >
-                                                <option value="foreman">🔧 Maestro de Obra</option>
-                                                <option value="engineer">👷 Ing. Residente</option>
-                                                <option value="pm">📋 Project Manager</option>
-                                                <option value="logistics">📦 Logística</option>
-                                                <option value="ceo">👩‍💼 CEO</option>
-                                                <option value="admin">👤 Administrador</option>
-                                            </select>
-                                        </div>
-                                        
-                                        {['pm', 'engineer', 'foreman'].includes(editUserForm.role) && (
-                                            <div>
-                                                <label className="block text-sm font-medium text-slate-700 mb-2">Proyectos Asignados</label>
-                                                <div className="max-h-48 overflow-y-auto p-3 bg-slate-50 border border-slate-200 rounded-lg">
-                                                    {projects.filter(p => p.status === 'active').length === 0 ? (
-                                                        <p className="text-sm text-slate-400">No hay proyectos disponibles</p>
-                                                    ) : (
-                                                        <div className="grid grid-cols-1 gap-2">
-                                                            {projects.filter(p => p.status === 'active').map(project => (
-                                                                <label key={project.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-white cursor-pointer">
-                                                                    <input
-                                                                        type="checkbox"
-                                                                        checked={editUserForm.assignedProjects.includes(project.id)}
-                                                                        onChange={() => toggleEditProjectAssignment(project.id)}
-                                                                        className="rounded text-blue-600 w-4 h-4"
-                                                                    />
-                                                                    <div className="flex-1">
-                                                                        <p className="text-sm font-medium">{project.name}</p>
-                                                                        <p className="text-xs text-slate-400">{project.code}</p>
-                                                                    </div>
-                                                                </label>
-                                                            ))}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        )}
-                                        
-                                        <div className="flex gap-3 pt-4">
-                                            <button
-                                                type="button"
-                                                onClick={() => setEditingUser(null)}
-                                                className="flex-1 px-4 py-2.5 border border-slate-200 rounded-lg hover:bg-slate-50"
-                                            >
-                                                Cancelar
-                                            </button>
-                                            <button
-                                                type="submit"
-                                                disabled={loadingUsers}
-                                                className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium disabled:opacity-50"
-                                            >
-                                                {loadingUsers ? 'Guardando...' : '✓ Guardar Cambios'}
-                                            </button>
-                                        </div>
-                                    </form>
-                                </div>
-                            </div>
-                        )}
-                        
-                        {/* Delete Confirmation Modal */}
-                        {deleteConfirmUser && (
-                            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-                                <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl">
-                                    <div className="text-center mb-6">
-                                        <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                                            <span className="text-3xl">⚠️</span>
-                                        </div>
-                                        <h3 className="text-xl font-bold text-slate-800">¿Desactivar Usuario?</h3>
-                                        <p className="text-slate-500 mt-2">
-                                            ¿Está seguro que desea desactivar a <strong>{deleteConfirmUser.full_name}</strong>?
-                                        </p>
-                                        <p className="text-sm text-slate-400 mt-1">
-                                            El usuario no podrá iniciar sesión hasta que sea reactivado.
-                                        </p>
-                                    </div>
-                                    
-                                    <div className="flex gap-3">
-                                        <button
-                                            onClick={() => setDeleteConfirmUser(null)}
-                                            className="flex-1 px-4 py-2.5 border border-slate-200 rounded-lg hover:bg-slate-50"
-                                        >
-                                            Cancelar
-                                        </button>
-                                        <button
-                                            onClick={() => handleDeactivateUser(deleteConfirmUser.id)}
-                                            disabled={loadingUsers}
-                                            className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium disabled:opacity-50"
-                                        >
-                                            {loadingUsers ? 'Desactivando...' : '🗑️ Sí, Desactivar'}
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-                        
-                        {/* CREDENTIALS TAB */}
-                        {activeTab === 'credentials' && (
-                            <div>
-                                <h3 className="text-lg font-semibold text-slate-800 mb-4">🔐 Gestión de Credenciales</h3>
-                                <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6">
-                                    <p className="text-sm text-blue-800">
-                                        <strong>Nota de seguridad:</strong> Por políticas de Supabase Auth, las contraseñas no pueden cambiarse directamente desde el panel. 
-                                        Use "Enviar Reset" para que el usuario reciba un email y pueda establecer su nueva contraseña.
-                                    </p>
-                                </div>
-                                
-                                {loadingUsers ? <LoadingSpinner /> : (
-                                    <div className="overflow-x-auto">
-                                        <table className="w-full text-sm">
-                                            <thead className="bg-slate-100">
-                                                <tr>
-                                                    <th className="px-4 py-3 text-left">Usuario</th>
-                                                    <th className="px-4 py-3 text-left">Email</th>
-                                                    <th className="px-4 py-3 text-left">Rol</th>
-                                                    <th className="px-4 py-3 text-left">Estado</th>
-                                                    <th className="px-4 py-3 text-left">Última Conexión</th>
-                                                    <th className="px-4 py-3 text-center">Acciones</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-slate-100">
-                                                {users.map(user => (
-                                                    <tr key={user.id} className="hover:bg-slate-50">
-                                                        <td className="px-4 py-3">
-                                                            <div className="flex items-center gap-3">
-                                                                <div className="w-10 h-10 bg-gradient-to-br from-slate-200 to-slate-300 rounded-full flex items-center justify-center text-lg">
-                                                                    {user.avatar_url ? (
-                                                                        <img src={user.avatar_url} alt="" className="w-full h-full rounded-full object-cover" />
-                                                                    ) : (
-                                                                        user.full_name?.charAt(0)?.toUpperCase() || '👤'
-                                                                    )}
-                                                                </div>
-                                                                <span className="font-medium">{user.full_name}</span>
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-4 py-3 text-slate-600">{user.email}</td>
-                                                        <td className="px-4 py-3">
-                                                            <span className={`px-2 py-1 text-xs font-medium rounded-full ${getRoleColor(user.role)}`}>
-                                                                {getRoleName(user.role)}
-                                                            </span>
-                                                        </td>
-                                                        <td className="px-4 py-3">
-                                                            <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                                                                user.is_active !== false ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
-                                                            }`}>
-                                                                {user.is_active !== false ? '● Activo' : '○ Inactivo'}
-                                                            </span>
-                                                        </td>
-                                                        <td className="px-4 py-3 text-slate-500">
-                                                            {user.last_login ? formatDate(user.last_login) : 'Nunca'}
-                                                        </td>
-                                                        <td className="px-4 py-3 text-center">
-                                                            <button
-                                                                onClick={() => handleSendPasswordReset(user.email)}
-                                                                className="px-3 py-1.5 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 text-sm font-medium"
-                                                            >
-                                                                📧 Enviar Reset
-                                                            </button>
-                                                        </td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-                        
-                        {/* PROJECTS TAB */}
-                        {activeTab === 'projects' && (
-                            <div>
-                                <div className="flex justify-between items-center mb-6">
-                                    <h3 className="text-lg font-semibold text-slate-800">📁 Gestión de Proyectos</h3>
-                                    <button
-                                        onClick={() => setShowProjectForm(!showProjectForm)}
-                                        className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 text-sm"
-                                    >
-                                        ➕ Nuevo Proyecto
-                                    </button>
-                                </div>
-                                
-                                {/* New Project Form */}
-                                {showProjectForm && (
-                                    <div className="mb-6 p-6 bg-blue-50 rounded-xl border border-blue-200">
-                                        <h4 className="font-semibold text-blue-800 mb-4">Crear Nuevo Proyecto</h4>
-                                        <form onSubmit={handleCreateProject} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                            <div>
-                                                <label className="block text-sm font-medium text-slate-700 mb-1">Código *</label>
-                                                <input
-                                                    type="text"
-                                                    value={newProject.code}
-                                                    onChange={(e) => setNewProject(prev => ({ ...prev, code: e.target.value }))}
-                                                    required
-                                                    className="w-full px-4 py-2 border border-slate-200 rounded-lg bg-white"
-                                                    placeholder="PRJ-001"
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="block text-sm font-medium text-slate-700 mb-1">Nombre *</label>
-                                                <input
-                                                    type="text"
-                                                    value={newProject.name}
-                                                    onChange={(e) => setNewProject(prev => ({ ...prev, name: e.target.value }))}
-                                                    required
-                                                    className="w-full px-4 py-2 border border-slate-200 rounded-lg bg-white"
-                                                    placeholder="Edificio Central"
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="block text-sm font-medium text-slate-700 mb-1">Cliente</label>
-                                                <input
-                                                    type="text"
-                                                    value={newProject.clientName}
-                                                    onChange={(e) => setNewProject(prev => ({ ...prev, clientName: e.target.value }))}
-                                                    className="w-full px-4 py-2 border border-slate-200 rounded-lg bg-white"
-                                                    placeholder="Empresa XYZ"
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="block text-sm font-medium text-slate-700 mb-1">Ubicación</label>
-                                                <input
-                                                    type="text"
-                                                    value={newProject.location}
-                                                    onChange={(e) => setNewProject(prev => ({ ...prev, location: e.target.value }))}
-                                                    className="w-full px-4 py-2 border border-slate-200 rounded-lg bg-white"
-                                                    placeholder="Lima, Perú"
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="block text-sm font-medium text-slate-700 mb-1">Presupuesto (S/)</label>
-                                                <input
-                                                    type="number"
-                                                    value={newProject.budget}
-                                                    onChange={(e) => setNewProject(prev => ({ ...prev, budget: e.target.value }))}
-                                                    min="0"
-                                                    step="0.01"
-                                                    className="w-full px-4 py-2 border border-slate-200 rounded-lg bg-white"
-                                                    placeholder="1000000"
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="block text-sm font-medium text-slate-700 mb-1">Fecha Inicio</label>
-                                                <input
-                                                    type="date"
-                                                    value={newProject.startDate}
-                                                    onChange={(e) => setNewProject(prev => ({ ...prev, startDate: e.target.value }))}
-                                                    className="w-full px-4 py-2 border border-slate-200 rounded-lg bg-white"
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="block text-sm font-medium text-slate-700 mb-1">Fecha Fin</label>
-                                                <input
-                                                    type="date"
-                                                    value={newProject.endDate}
-                                                    onChange={(e) => setNewProject(prev => ({ ...prev, endDate: e.target.value }))}
-                                                    className="w-full px-4 py-2 border border-slate-200 rounded-lg bg-white"
-                                                />
-                                            </div>
-                                            <div className="md:col-span-2 flex gap-2">
-                                                <button
-                                                    type="submit"
-                                                    disabled={loadingUsers}
-                                                    className="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 disabled:opacity-50"
-                                                >
-                                                    {loadingUsers ? 'Creando...' : '✓ Crear Proyecto'}
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setShowProjectForm(false)}
-                                                    className="bg-slate-200 px-4 py-2 rounded-lg hover:bg-slate-300"
-                                                >
-                                                    Cancelar
-                                                </button>
-                                            </div>
-                                        </form>
-                                    </div>
-                                )}
-                                
-                                {/* Projects List */}
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                    {projects.length === 0 ? (
-                                        <p className="text-slate-500 text-center py-8 col-span-full">No hay proyectos registrados</p>
-                                    ) : (
-                                        projects.map(project => {
-                                            const progressColor = (project.progress || 0) >= 75 ? 'bg-green-500' 
-                                                : (project.progress || 0) >= 50 ? 'bg-blue-500' 
-                                                : (project.progress || 0) >= 25 ? 'bg-yellow-500' 
-                                                : 'bg-red-500'
-                                            
-                                            return (
-                                                <div key={project.id} className="bg-slate-50 rounded-xl p-5 border border-slate-100">
-                                                    <div className="flex justify-between items-start mb-3">
-                                                        <div>
-                                                            <p className="font-semibold text-slate-800">{project.name}</p>
-                                                            <p className="text-sm text-slate-500 font-mono">{project.code}</p>
-                                                        </div>
-                                                        <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                                                            project.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-700'
-                                                        }`}>
-                                                            {project.status === 'active' ? '● Activo' : project.status}
-                                                        </span>
-                                                    </div>
-                                                    
-                                                    <p className="text-sm text-slate-600 mb-2">{project.client_name || 'Sin cliente'}</p>
-                                                    <p className="text-sm text-slate-500 mb-3">📍 {project.location || 'Sin ubicación'}</p>
-                                                    
-                                                    <div className="mb-3">
-                                                        <div className="flex justify-between text-sm mb-1">
-                                                            <span>Avance</span>
-                                                            <span className="font-medium">{project.progress || 0}%</span>
-                                                        </div>
-                                                        <div className="w-full bg-slate-200 rounded-full h-2">
-                                                            <div className={`h-2 rounded-full ${progressColor}`} style={{ width: `${project.progress || 0}%` }}></div>
-                                                        </div>
-                                                    </div>
-                                                    
-                                                    <div className="flex justify-between text-sm mb-3">
-                                                        <span className="text-slate-500">Presupuesto:</span>
-                                                        <span className="font-medium">{formatCurrency(project.budget)}</span>
-                                                    </div>
-                                                    
-                                                    <div className="flex gap-2">
-                                                        <button
-                                                            onClick={() => handleDeactivateProject(project.id)}
-                                                            className="flex-1 text-sm py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200"
-                                                        >
-                                                            Desactivar
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            )
-                                        })
-                                    )}
-                                </div>
-                            </div>
-                        )}
-                        
-                        {/* SETTINGS TAB */}
-                        {activeTab === 'settings' && (
-                            <div>
-                                <h3 className="text-lg font-semibold text-slate-800 mb-4">⚙️ Configuración del Sistema</h3>
-                                <div className="max-w-xl space-y-4 bg-slate-50 p-6 rounded-xl">
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">Nombre de la Empresa</label>
-                                        <input
-                                            type="text"
-                                            value={settingsForm.companyName}
-                                            onChange={(e) => setSettingsForm(prev => ({ ...prev, companyName: e.target.value }))}
-                                            className="w-full px-4 py-2.5 border border-slate-200 rounded-lg bg-white"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">URL del Logo</label>
-                                        <input
-                                            type="url"
-                                            value={settingsForm.logoUrl}
-                                            onChange={(e) => setSettingsForm(prev => ({ ...prev, logoUrl: e.target.value }))}
-                                            className="w-full px-4 py-2.5 border border-slate-200 rounded-lg bg-white"
-                                            placeholder="https://ejemplo.com/logo.png"
-                                        />
-                                        {settingsForm.logoUrl && (
-                                            <div className="mt-2 p-3 bg-white rounded-lg border border-slate-200">
-                                                <p className="text-xs text-slate-500 mb-2">Vista previa:</p>
-                                                <img 
-                                                    src={settingsForm.logoUrl} 
-                                                    alt="Logo preview" 
-                                                    className="h-12 w-12 object-contain"
-                                                    onError={(e) => e.target.style.display = 'none'}
-                                                />
-                                            </div>
-                                        )}
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">Moneda</label>
-                                        <select
-                                            value={settingsForm.currency}
-                                            onChange={(e) => setSettingsForm(prev => ({ ...prev, currency: e.target.value }))}
-                                            className="w-full px-4 py-2.5 border border-slate-200 rounded-lg bg-white"
-                                        >
-                                            <option value="PEN">Soles (PEN)</option>
-                                            <option value="USD">Dólares (USD)</option>
-                                        </select>
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">Tasa de Impuesto (%)</label>
-                                        <input
-                                            type="number"
-                                            value={settingsForm.taxRate}
-                                            onChange={(e) => setSettingsForm(prev => ({ ...prev, taxRate: parseFloat(e.target.value) || 0 }))}
-                                            min="0"
-                                            max="100"
-                                            step="0.01"
-                                            className="w-full px-4 py-2.5 border border-slate-200 rounded-lg bg-white"
-                                        />
-                                    </div>
-                                    <button 
-                                        onClick={handleSaveSettings}
-                                        className="w-full bg-blue-600 text-white py-2.5 rounded-lg hover:bg-blue-700 font-medium"
-                                    >
-                                        💾 Guardar Configuración
-                                    </button>
-                                </div>
-                            </div>
-                        )}
-                        
-                    </div>
-                )}
-            </MainContent>
-        </>
-    )
-}
-
-// ============================================
-// MAIN APP COMPONENT
-// ============================================
-function AppContent() {
-    const { user, profile, loading, error, setError } = useApp()
-    
-    if (loading) {
-        return (
-            <div className="min-h-screen bg-slate-100 flex items-center justify-center">
-                <LoadingSpinner message="Cargando aplicación..." />
+              </div>
+            ))}
+          {dailyReports.filter(r => r.photos?.length > 0).length === 0 && (
+            <div className="col-span-full text-center py-12 text-gray-500">
+              No hay evidencia fotográfica disponible
             </div>
-        )
-    }
-    
-    if (!user || !profile) {
-        return <LoginPage />
-    }
-    
-    // Render based on role
-    const renderModule = () => {
-        switch (profile.role) {
-            case 'admin':
-                return <AdminModule />
-            case 'ceo':
-                return <CEOModule />
-            case 'pm':
-                return <PMModule />
-            case 'engineer':
-                return <EngineerModule />
-            case 'foreman':
-                return <ForemanModule />
-            case 'logistics':
-                return <LogisticsModule />
-            default:
-                return <LoginPage />
-        }
-    }
-    
-    return (
-        <>
-            <ErrorAlert message={error} onClose={() => setError(null)} />
-            {renderModule()}
-        </>
-    )
-}
+          )}
+        </div>
+      )}
 
-// ============================================
-// ROOT APP WITH PROVIDER
-// ============================================
+      {/* Report Detail Modal */}
+      <Modal
+        isOpen={!!selectedReport}
+        onClose={() => setSelectedReport(null)}
+        title={`Reporte del ${selectedReport ? new Date(selectedReport.report_date).toLocaleDateString('es-PE') : ''}`}
+      >
+        {selectedReport && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <p className="text-sm text-gray-500">Partida</p>
+                <p className="font-medium">{selectedReport.partidas?.name}</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Avance</p>
+                <p className="font-medium">{selectedReport.progress_value}</p>
+              </div>
+            </div>
+
+            {selectedReport.labor_data?.length > 0 && (
+              <div>
+                <p className="text-sm text-gray-500 mb-2">Mano de Obra</p>
+                <div className="bg-gray-50 rounded-lg p-3 space-y-1">
+                  {selectedReport.labor_data.map((labor, idx) => (
+                    <div key={idx} className="flex justify-between text-sm">
+                      <span className="capitalize">{labor.worker_type}</span>
+                      <span>{labor.hours}h × S/{labor.rate} = {formatCurrency(labor.cost)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {selectedReport.materials_data?.length > 0 && (
+              <div>
+                <p className="text-sm text-gray-500 mb-2">Materiales</p>
+                <div className="bg-gray-50 rounded-lg p-3 space-y-1">
+                  {selectedReport.materials_data.map((mat, idx) => (
+                    <div key={idx} className="flex justify-between text-sm">
+                      <span>{mat.material_name}</span>
+                      <span>{mat.quantity} {mat.unit} = {formatCurrency(mat.total_cost)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {selectedReport.notes && (
+              <div>
+                <p className="text-sm text-gray-500 mb-2">Observaciones</p>
+                <p className="bg-gray-50 rounded-lg p-3 text-sm">{selectedReport.notes}</p>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+    </div>
+  );
+};
+
+// ============== CEO MODULE ==============
+const CEOModule = () => {
+  const [loading, setLoading] = useState(true);
+  const [projects, setProjects] = useState([]);
+  const [cashFlowData, setCashFlowData] = useState([]);
+  const [selectedProject, setSelectedProject] = useState(null);
+
+  const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
+
+  useEffect(() => {
+    const fetchData = async () => {
+      setLoading(true);
+
+      try {
+        const { data: projectsData, error } = await supabase
+          .from('projects')
+          .select(`
+            *,
+            partidas(id, current_progress, total_budgeted, unit_price),
+            daily_reports(id, total_labor_cost, total_materials_cost, report_date)
+          `)
+          .eq('is_active', true);
+
+        if (error) throw error;
+
+        // Process project data
+        const processedProjects = projectsData.map(project => {
+          const totalBudget = project.partidas?.reduce((sum, p) => 
+            sum + ((p.total_budgeted || 0) * (p.unit_price || 0)), 0
+          ) || project.total_budget || 0;
+
+          const executedCost = project.daily_reports?.reduce((sum, r) => 
+            sum + (r.total_labor_cost || 0) + (r.total_materials_cost || 0), 0
+          ) || 0;
+
+          const overallProgress = project.partidas?.length > 0
+            ? project.partidas.reduce((sum, p) => {
+                const pProgress = ((p.current_progress || 0) / (p.total_budgeted || 1)) * 100;
+                return sum + pProgress;
+              }, 0) / project.partidas.length
+            : 0;
+
+          return {
+            ...project,
+            totalBudget,
+            executedCost,
+            overallProgress: Math.min(overallProgress, 100)
+          };
+        });
+
+        setProjects(processedProjects);
+
+        // Generate cash flow data (last 6 months)
+        const monthNames = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+        const now = new Date();
+        const cashFlow = [];
+
+        for (let i = 5; i >= 0; i--) {
+          const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
+          const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+          
+          let monthIncome = 0;
+          let monthExpense = 0;
+
+          projectsData.forEach(project => {
+            project.daily_reports?.forEach(report => {
+              if (report.report_date?.startsWith(monthKey)) {
+                monthExpense += (report.total_labor_cost || 0) + (report.total_materials_cost || 0);
+              }
+            });
+          });
+
+          // Simulate income based on progress (in real app, this would come from invoices)
+          monthIncome = monthExpense * 1.15;
+
+          cashFlow.push({
+            month: monthNames[date.getMonth()],
+            ingresos: Math.round(monthIncome),
+            egresos: Math.round(monthExpense),
+            balance: Math.round(monthIncome - monthExpense)
+          });
+        }
+
+        setCashFlowData(cashFlow);
+      } catch (error) {
+        console.error('Error fetching CEO data:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, []);
+
+  const totalBudget = projects.reduce((sum, p) => sum + p.totalBudget, 0);
+  const totalExecuted = projects.reduce((sum, p) => sum + p.executedCost, 0);
+  const avgProgress = projects.length > 0
+    ? projects.reduce((sum, p) => sum + p.overallProgress, 0) / projects.length
+    : 0;
+
+  const pieData = projects.map(p => ({
+    name: p.name,
+    value: p.totalBudget
+  }));
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Spinner size="lg" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-2xl font-bold text-gray-800">Dashboard Ejecutivo</h2>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl p-5 text-white">
+          <p className="text-blue-100 text-sm font-medium">Total Proyectos</p>
+          <p className="text-3xl font-bold mt-1">{projects.length}</p>
+        </div>
+        <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-xl p-5 text-white">
+          <p className="text-green-100 text-sm font-medium">Presupuesto Total</p>
+          <p className="text-lg font-bold mt-1 truncate" title={formatCurrency(totalBudget)}>
+            {formatCurrency(totalBudget)}
+          </p>
+        </div>
+        <div className="bg-gradient-to-br from-yellow-500 to-yellow-600 rounded-xl p-5 text-white">
+          <p className="text-yellow-100 text-sm font-medium">Ejecutado</p>
+          <p className="text-lg font-bold mt-1 truncate" title={formatCurrency(totalExecuted)}>
+            {formatCurrency(totalExecuted)}
+          </p>
+        </div>
+        <div className="bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl p-5 text-white">
+          <p className="text-purple-100 text-sm font-medium">Avance Promedio</p>
+          <p className="text-3xl font-bold mt-1">{avgProgress.toFixed(1)}%</p>
+        </div>
+      </div>
+
+      {/* Charts Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Cash Flow Chart */}
+        <div className="bg-white rounded-xl shadow p-6">
+          <h3 className="text-lg font-semibold text-gray-800 mb-4">Flujo de Caja (Últimos 6 meses)</h3>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={cashFlowData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+              <XAxis dataKey="month" stroke="#6B7280" />
+              <YAxis stroke="#6B7280" tickFormatter={(v) => `S/${(v/1000).toFixed(0)}k`} />
+              <Tooltip
+                formatter={(value) => formatCurrency(value)}
+                labelStyle={{ color: '#374151' }}
+              />
+              <Legend />
+              <Bar dataKey="ingresos" name="Ingresos" fill="#10B981" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="egresos" name="Egresos" fill="#EF4444" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Budget Distribution */}
+        <div className="bg-white rounded-xl shadow p-6">
+          <h3 className="text-lg font-semibold text-gray-800 mb-4">Distribución de Presupuesto</h3>
+          <ResponsiveContainer width="100%" height={300}>
+            <PieChart>
+              <Pie
+                data={pieData}
+                cx="50%"
+                cy="50%"
+                innerRadius={60}
+                outerRadius={100}
+                paddingAngle={2}
+                dataKey="value"
+                label={({ name, percent }) => `${name.substring(0, 10)}... (${(percent * 100).toFixed(0)}%)`}
+              >
+                {pieData.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip formatter={(value) => formatCurrency(value)} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Balance Trend */}
+      <div className="bg-white rounded-xl shadow p-6">
+        <h3 className="text-lg font-semibold text-gray-800 mb-4">Tendencia de Balance</h3>
+        <ResponsiveContainer width="100%" height={250}>
+          <LineChart data={cashFlowData}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+            <XAxis dataKey="month" stroke="#6B7280" />
+            <YAxis stroke="#6B7280" tickFormatter={(v) => `S/${(v/1000).toFixed(0)}k`} />
+            <Tooltip formatter={(value) => formatCurrency(value)} />
+            <Line
+              type="monotone"
+              dataKey="balance"
+              name="Balance"
+              stroke="#8B5CF6"
+              strokeWidth={3}
+              dot={{ fill: '#8B5CF6', strokeWidth: 2 }}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Projects List */}
+      <div className="bg-white rounded-xl shadow overflow-hidden">
+        <div className="px-6 py-4 border-b">
+          <h3 className="text-lg font-semibold text-gray-800">Todos los Proyectos</h3>
+        </div>
+        <div className="divide-y divide-gray-100">
+          {projects.map((project, index) => (
+            <div
+              key={project.id}
+              className="p-4 hover:bg-gray-50 cursor-pointer transition"
+              onClick={() => setSelectedProject(project)}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div
+                    className="w-3 h-3 rounded-full"
+                    style={{ backgroundColor: COLORS[index % COLORS.length] }}
+                  />
+                  <div>
+                    <p className="font-medium text-gray-900">{project.name}</p>
+                    <p className="text-sm text-gray-500">{project.location || 'Sin ubicación'}</p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="text-lg font-semibold text-gray-900 truncate max-w-[150px]" title={formatCurrency(project.totalBudget)}>
+                    {formatCurrency(project.totalBudget)}
+                  </p>
+                  <div className="flex items-center gap-2 justify-end">
+                    <div className="w-20 bg-gray-200 rounded-full h-2">
+                      <div
+                        className="h-2 rounded-full bg-blue-500"
+                        style={{ width: `${project.overallProgress}%` }}
+                      />
+                    </div>
+                    <span className="text-sm text-gray-600">{project.overallProgress.toFixed(0)}%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Project Detail Modal */}
+      <Modal
+        isOpen={!!selectedProject}
+        onClose={() => setSelectedProject(null)}
+        title={selectedProject?.name || 'Detalle del Proyecto'}
+      >
+        {selectedProject && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-gray-50 p-3 rounded-lg">
+                <p className="text-xs text-gray-500">Presupuesto</p>
+                <p className="font-semibold text-gray-900 truncate">{formatCurrency(selectedProject.totalBudget)}</p>
+              </div>
+              <div className="bg-gray-50 p-3 rounded-lg">
+                <p className="text-xs text-gray-500">Ejecutado</p>
+                <p className="font-semibold text-gray-900 truncate">{formatCurrency(selectedProject.executedCost)}</p>
+              </div>
+              <div className="bg-gray-50 p-3 rounded-lg">
+                <p className="text-xs text-gray-500">Avance</p>
+                <p className="font-semibold text-gray-900">{selectedProject.overallProgress.toFixed(1)}%</p>
+              </div>
+              <div className="bg-gray-50 p-3 rounded-lg">
+                <p className="text-xs text-gray-500">Partidas</p>
+                <p className="font-semibold text-gray-900">{selectedProject.partidas?.length || 0}</p>
+              </div>
+            </div>
+            <div className="bg-gray-50 p-3 rounded-lg">
+              <p className="text-xs text-gray-500 mb-1">Progreso General</p>
+              <div className="flex items-center gap-3">
+                <div className="flex-1 bg-gray-200 rounded-full h-3">
+                  <div
+                    className="h-3 rounded-full bg-blue-500 transition-all"
+                    style={{ width: `${selectedProject.overallProgress}%` }}
+                  />
+                </div>
+                <span className="font-medium text-gray-700">{selectedProject.overallProgress.toFixed(0)}%</span>
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
+    </div>
+  );
+};
+
+// ============== LOGISTICS MODULE ==============
+const LogisticsModule = ({ project }) => {
+  const [loading, setLoading] = useState(true);
+  const [materials, setMaterials] = useState([]);
+  const [materialUsage, setMaterialUsage] = useState([]);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!project?.id) return;
+      setLoading(true);
+
+      try {
+        const [catalogRes, reportsRes] = await Promise.all([
+          supabase.from('materials_catalog').select('*').eq('is_active', true),
+          supabase
+            .from('daily_reports')
+            .select('materials_data, report_date')
+            .eq('project_id', project.id)
+        ]);
+
+        if (catalogRes.data) setMaterials(catalogRes.data);
+
+        // Aggregate material usage
+        const usageMap = new Map();
+        reportsRes.data?.forEach(report => {
+          report.materials_data?.forEach(mat => {
+            const existing = usageMap.get(mat.material_id) || {
+              material_id: mat.material_id,
+              material_name: mat.material_name,
+              total_quantity: 0,
+              total_cost: 0,
+              unit: mat.unit
+            };
+            existing.total_quantity += mat.quantity || 0;
+            existing.total_cost += mat.total_cost || 0;
+            usageMap.set(mat.material_id, existing);
+          });
+        });
+
+        setMaterialUsage(Array.from(usageMap.values()));
+      } catch (error) {
+        console.error('Error fetching logistics data:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, [project?.id]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Spinner size="lg" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-2xl font-bold text-gray-800">Logística de Materiales</h2>
+
+      {/* Material Usage Summary */}
+      <div className="bg-white rounded-xl shadow overflow-hidden">
+        <div className="px-6 py-4 border-b">
+          <h3 className="text-lg font-semibold text-gray-800">Consumo de Materiales</h3>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Material</th>
+                <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Unidad</th>
+                <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Cantidad Usada</th>
+                <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Costo Total</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {materialUsage.map(usage => (
+                <tr key={usage.material_id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-medium text-gray-900">{usage.material_name}</td>
+                  <td className="px-4 py-3 text-center text-gray-600">{usage.unit}</td>
+                  <td className="px-4 py-3 text-center font-medium text-gray-900">
+                    {usage.total_quantity.toFixed(2)}
+                  </td>
+                  <td className="px-4 py-3 text-right text-gray-900">
+                    {formatCurrency(usage.total_cost)}
+                  </td>
+                </tr>
+              ))}
+              {materialUsage.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="px-4 py-8 text-center text-gray-500">
+                    No hay consumo de materiales registrado
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Materials Catalog */}
+      <div className="bg-white rounded-xl shadow overflow-hidden">
+        <div className="px-6 py-4 border-b">
+          <h3 className="text-lg font-semibold text-gray-800">Catálogo de Materiales</h3>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+          {materials.map(mat => (
+            <div key={mat.id} className="bg-gray-50 rounded-lg p-4">
+              <h4 className="font-medium text-gray-900">{mat.name}</h4>
+              <p className="text-sm text-gray-500">{mat.description || 'Sin descripción'}</p>
+              <div className="mt-2 flex justify-between text-sm">
+                <span className="text-gray-600">{mat.unit}</span>
+                <span className="font-medium text-gray-900">{formatCurrency(mat.unit_cost)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ============== MAIN APP COMPONENT ==============
 export default function App() {
+  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [projects, setProjects] = useState([]);
+  const [selectedProject, setSelectedProject] = useState(null);
+  const [activeModule, setActiveModule] = useState('dashboard');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [loginForm, setLoginForm] = useState({ email: '', password: '' });
+  const [loginError, setLoginError] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  // Check auth state on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          setUser(session.user);
+          const userProfile = await getUserProfile(session.user.id);
+          setProfile(userProfile);
+          
+          if (userProfile) {
+            const userProjects = await getUserProjects(session.user.id, userProfile.role);
+            setProjects(userProjects || []);
+          }
+        }
+      } catch (error) {
+        console.error('Auth check error:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    checkAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' && session?.user) {
+        setUser(session.user);
+        const userProfile = await getUserProfile(session.user.id);
+        setProfile(userProfile);
+        
+        if (userProfile) {
+          const userProjects = await getUserProjects(session.user.id, userProfile.role);
+          setProjects(userProjects || []);
+        }
+      } else if (event === 'SIGNED_OUT') {
+        setUser(null);
+        setProfile(null);
+        setProjects([]);
+        setSelectedProject(null);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoginLoading(true);
+    setLoginError('');
+
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email: loginForm.email,
+        password: loginForm.password
+      });
+
+      if (error) throw error;
+    } catch (error) {
+      setLoginError(error.message || 'Error al iniciar sesión');
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+  };
+
+  const getModulesForRole = (role) => {
+    const modules = {
+      admin: [
+        { id: 'users', label: 'Usuarios', icon: 'M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z' }
+      ],
+      ceo: [
+        { id: 'dashboard', label: 'Dashboard', icon: 'M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z' }
+      ],
+      engineer: [
+        { id: 'progress', label: 'Avance', icon: 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z' }
+      ],
+      foreman: [
+        { id: 'report', label: 'Reporte Diario', icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z' }
+      ],
+      logistics: [
+        { id: 'materials', label: 'Materiales', icon: 'M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4' }
+      ]
+    };
+
+    return modules[role] || [];
+  };
+
+  const needsProjectSelection = (role) => {
+    return ['engineer', 'foreman', 'logistics'].includes(role);
+  };
+
+  const renderContent = () => {
+    if (!profile) return null;
+
+    const role = profile.role;
+
+    // Admin module
+    if (role === 'admin') {
+      return <AdminModule currentUser={profile} />;
+    }
+
+    // CEO module
+    if (role === 'ceo') {
+      return <CEOModule />;
+    }
+
+    // Roles that need project selection
+    if (needsProjectSelection(role) && !selectedProject) {
+      return (
+        <div className="flex flex-col items-center justify-center h-64 text-center">
+          <svg className="w-16 h-16 text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+          </svg>
+          <h3 className="text-xl font-semibold text-gray-700 mb-2">Seleccione un Proyecto</h3>
+          <p className="text-gray-500">Use el menú lateral para elegir un proyecto</p>
+        </div>
+      );
+    }
+
+    switch (role) {
+      case 'engineer':
+        return <EngineerModule project={selectedProject} />;
+      case 'foreman':
+        return <ForemanModule project={selectedProject} currentUser={profile} />;
+      case 'logistics':
+        return <LogisticsModule project={selectedProject} />;
+      default:
+        return <div className="text-center py-12 text-gray-500">Rol no reconocido</div>;
+    }
+  };
+
+  // Loading state
+  if (loading) {
+    return <LoadingOverlay message="Cargando aplicación..." />;
+  }
+
+  // Login screen
+  if (!user) {
     return (
-        <ToastProvider>
-            <AppProvider>
-                <style>{`
-                    @keyframes slide-in {
-                        from {
-                            transform: translateX(100%);
-                            opacity: 0;
-                        }
-                        to {
-                            transform: translateX(0);
-                            opacity: 1;
-                        }
-                    }
-                    .animate-slide-in {
-                        animation: slide-in 0.3s ease-out;
-                    }
-                `}</style>
-                <AppContent />
-            </AppProvider>
-        </ToastProvider>
-    )
+      <div className="min-h-screen bg-gradient-to-br from-blue-600 to-purple-700 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8">
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-4">
+              <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+              </svg>
+            </div>
+            <h1 className="text-2xl font-bold text-gray-800">Sistema de Gestión</h1>
+            <p className="text-gray-500 mt-1">Control de Obras</p>
+          </div>
+
+          <form onSubmit={handleLogin} className="space-y-4">
+            {loginError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+                {loginError}
+              </div>
+            )}
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Correo Electrónico</label>
+              <input
+                type="email"
+                required
+                value={loginForm.email}
+                onChange={(e) => setLoginForm(prev => ({ ...prev, email: e.target.value }))}
+                className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                placeholder="usuario@empresa.com"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Contraseña</label>
+              <input
+                type="password"
+                required
+                value={loginForm.password}
+                onChange={(e) => setLoginForm(prev => ({ ...prev, password: e.target.value }))}
+                className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                placeholder="••••••••"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loginLoading}
+              className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {loginLoading && <Spinner size="sm" />}
+              {loginLoading ? 'Ingresando...' : 'Ingresar'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  const modules = getModulesForRole(profile?.role);
+  const showProjects = needsProjectSelection(profile?.role);
+
+  return (
+    <div className="min-h-screen bg-gray-100 flex">
+      {/* Mobile Hamburger Button */}
+      <button
+        onClick={() => setSidebarOpen(true)}
+        className="md:hidden fixed top-4 left-4 z-40 bg-white p-2 rounded-lg shadow-lg"
+      >
+        <svg className="w-6 h-6 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
+
+      {/* Sidebar Overlay (Mobile) */}
+      {sidebarOpen && (
+        <div
+          className="md:hidden fixed inset-0 bg-black/50 z-40"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar */}
+      <aside
+        className={`fixed md:static inset-y-0 left-0 z-50 w-64 bg-gray-900 text-white transform transition-transform duration-300 ${
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+        }`}
+      >
+        <div className="flex flex-col h-full">
+          {/* Logo */}
+          <div className="p-4 border-b border-gray-800">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+                  </svg>
+                </div>
+                <span className="font-bold text-lg">Control Obras</span>
+              </div>
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="md:hidden p-1 hover:bg-gray-800 rounded"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* User Info */}
+          <div className="p-4 border-b border-gray-800">
+            <p className="font-medium truncate">{profile?.full_name}</p>
+            <p className="text-sm text-gray-400 capitalize">{profile?.role}</p>
+          </div>
+
+          {/* Navigation */}
+          <nav className="flex-1 overflow-y-auto p-4 space-y-2">
+            {/* Module Links */}
+            {modules.map(module => (
+              <button
+                key={module.id}
+                onClick={() => {
+                  setActiveModule(module.id);
+                  setSidebarOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition ${
+                  activeModule === module.id
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-300 hover:bg-gray-800'
+                }`}
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={module.icon} />
+                </svg>
+                {module.label}
+              </button>
+            ))}
+
+            {/* Projects Section */}
+            {showProjects && projects.length > 0 && (
+              <div className="mt-6">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-4">
+                  Proyectos
+                </p>
+                {projects.map(project => (
+                  <button
+                    key={project.id}
+                    onClick={() => {
+                      setSelectedProject(project);
+                      setSidebarOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition ${
+                      selectedProject?.id === project.id
+                        ? 'bg-blue-600 text-white'
+                        : 'text-gray-300 hover:bg-gray-800'
+                    }`}
+                  >
+                    <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+                    </svg>
+                    <span className="truncate">{project.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </nav>
+
+          {/* Logout */}
+          <div className="p-4 border-t border-gray-800">
+            <button
+              onClick={handleLogout}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-gray-300 hover:bg-gray-800 transition"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+              Cerrar Sesión
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 overflow-auto">
+        {/* Top Header */}
+        <header className="bg-white shadow-sm px-4 md:px-6 py-4 sticky top-0 z-30">
+          <div className="flex items-center justify-between">
+            <div className="ml-10 md:ml-0">
+              {selectedProject ? (
+                <div>
+                  <h1 className="text-xl font-bold text-gray-800">{selectedProject.name}</h1>
+                  <p className="text-sm text-gray-500">{selectedProject.location || 'Sin ubicación'}</p>
+                </div>
+              ) : (
+                <h1 className="text-xl font-bold text-gray-800">
+                  {profile?.role === 'admin' ? 'Administración' :
+                   profile?.role === 'ceo' ? 'Dashboard Ejecutivo' :
+                   'Sistema de Control de Obras'}
+                </h1>
+              )}
+            </div>
+            <div className="flex items-center gap-4">
+              <span className="hidden sm:block text-sm text-gray-500">
+                {new Date().toLocaleDateString('es-PE', { 
+                  weekday: 'long', 
+                  year: 'numeric', 
+                  month: 'long', 
+                  day: 'numeric' 
+                })}
+              </span>
+            </div>
+          </div>
+        </header>
+
+        {/* Page Content */}
+        <div className="p-4 md:p-6">
+          {renderContent()}
+        </div>
+      </main>
+    </div>
+  );
 }
