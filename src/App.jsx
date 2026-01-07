@@ -157,29 +157,45 @@ const PasswordModal = ({ isOpen, onClose, userData }) => {
   );
 };
 
-// ============== ADMIN MODULE ==============
+// ============== ADMIN MODULE (CORREGIDO Y COMPLETO) ==============
 const AdminModule = ({ currentUser }) => {
+  const [activeTab, setActiveTab] = useState('users'); // 'users' | 'projects'
   const [users, setUsers] = useState([]);
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  // Estados para Usuarios
+  const [showCreateUserModal, setShowCreateUserModal] = useState(false);
+  const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [createdUserData, setCreatedUserData] = useState(null);
   const [selectedUser, setSelectedUser] = useState(null);
-  const [formData, setFormData] = useState({
+  const [userFormData, setUserFormData] = useState({
     email: '',
     full_name: '',
     role: 'foreman',
     assigned_projects: []
   });
-  const [submitting, setSubmitting] = useState(false);
+
+  // Estados para Proyectos
+  const [showCreateProjectModal, setShowCreateProjectModal] = useState(false);
+  const [projectFormData, setProjectFormData] = useState({
+    name: '',
+    code: '',
+    client: '',
+    location: '',
+    start_date: '',
+    end_date: '',
+    total_budget: '',
+    description: ''
+  });
 
   const roles = [
     { value: 'admin', label: 'Administrador' },
     { value: 'ceo', label: 'CEO' },
-    { value: 'engineer', label: 'Ingeniero' },
-    { value: 'foreman', label: 'Capataz' },
+    { value: 'engineer', label: 'Ingeniero Residente' },
+    { value: 'foreman', label: 'Maestro de Obra' },
     { value: 'logistics', label: 'Logística' }
   ];
 
@@ -188,7 +204,7 @@ const AdminModule = ({ currentUser }) => {
     try {
       const [usersRes, projectsRes] = await Promise.all([
         supabase.from('profiles').select('*, project_assignments(project_id)').order('created_at', { ascending: false }),
-        supabase.from('projects').select('*').eq('is_active', true)
+        supabase.from('projects').select('*').order('created_at', { ascending: false })
       ]);
 
       if (usersRes.data) setUsers(usersRes.data);
@@ -204,71 +220,56 @@ const AdminModule = ({ currentUser }) => {
     fetchData();
   }, [fetchData]);
 
+  // --- LÓGICA DE USUARIOS ---
+
   const handleCreateUser = async (e) => {
     e.preventDefault();
     setSubmitting(true);
 
     try {
       const password = generatePassword();
-
-      // 1. Create auth user
       const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: formData.email,
+        email: userFormData.email,
         password: password,
         options: {
           data: {
-            full_name: formData.full_name,
-            role: formData.role
+            full_name: userFormData.full_name,
+            role: userFormData.role
           }
         }
       });
 
       if (authError) throw authError;
-
       const userId = authData.user.id;
 
-      // 2. Insert into profiles
       const { error: profileError } = await supabase.from('profiles').insert({
         id: userId,
-        email: formData.email,
-        full_name: formData.full_name,
-        role: formData.role,
+        email: userFormData.email,
+        full_name: userFormData.full_name,
+        role: userFormData.role,
         is_active: true
       });
 
       if (profileError) throw profileError;
 
-      // 3. Insert project assignments
-      if (formData.assigned_projects.length > 0) {
-        const assignments = formData.assigned_projects.map(projectId => ({
+      if (userFormData.assigned_projects.length > 0) {
+        const assignments = userFormData.assigned_projects.map(projectId => ({
           user_id: userId,
           project_id: projectId
         }));
-
-        const { error: assignError } = await supabase.from('project_assignments').insert(assignments);
-        if (assignError) throw assignError;
+        await supabase.from('project_assignments').insert(assignments);
       }
 
-      // 4. Show password modal
       setCreatedUserData({
-        email: formData.email,
-        full_name: formData.full_name,
+        email: userFormData.email,
+        full_name: userFormData.full_name,
         password: password
       });
-      setShowCreateModal(false);
+      setShowCreateUserModal(false);
       setShowPasswordModal(true);
-      
-      // Reset form
-      setFormData({
-        email: '',
-        full_name: '',
-        role: 'foreman',
-        assigned_projects: []
-      });
-      
+      setUserFormData({ email: '', full_name: '', role: 'foreman', assigned_projects: [] });
       fetchData();
     } catch (error) {
-      console.error('Error creating user:', error);
       alert('Error al crear usuario: ' + error.message);
     } finally {
       setSubmitting(false);
@@ -279,80 +280,51 @@ const AdminModule = ({ currentUser }) => {
     e.preventDefault();
     if (!selectedUser) return;
     setSubmitting(true);
-
     try {
-      // 1. Update profile
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .update({
-          full_name: formData.full_name,
-          role: formData.role
-        })
-        .eq('id', selectedUser.id);
+      await supabase.from('profiles').update({
+          full_name: userFormData.full_name,
+          role: userFormData.role
+        }).eq('id', selectedUser.id);
 
-      if (profileError) throw profileError;
+      await supabase.from('project_assignments').delete().eq('user_id', selectedUser.id);
 
-      // 2. Delete old assignments
-      const { error: deleteError } = await supabase
-        .from('project_assignments')
-        .delete()
-        .eq('user_id', selectedUser.id);
-
-      if (deleteError) throw deleteError;
-
-      // 3. Insert new assignments
-      if (formData.assigned_projects.length > 0) {
-        const assignments = formData.assigned_projects.map(projectId => ({
+      if (userFormData.assigned_projects.length > 0) {
+        const assignments = userFormData.assigned_projects.map(projectId => ({
           user_id: selectedUser.id,
           project_id: projectId
         }));
-
-        const { error: assignError } = await supabase.from('project_assignments').insert(assignments);
-        if (assignError) throw assignError;
+        await supabase.from('project_assignments').insert(assignments);
       }
-
-      setShowEditModal(false);
+      setShowEditUserModal(false);
       setSelectedUser(null);
       fetchData();
-      alert('Usuario actualizado correctamente');
+      alert('Usuario actualizado');
     } catch (error) {
-      console.error('Error updating user:', error);
-      alert('Error al actualizar usuario: ' + error.message);
+      alert('Error: ' + error.message);
     } finally {
       setSubmitting(false);
     }
   };
 
-  const handleSoftDelete = async (userId) => {
-    if (!confirm('¿Está seguro de desactivar este usuario?')) return;
-
-    try {
-      const { error } = await supabase
-        .from('profiles')
-        .update({ is_active: false })
-        .eq('id', userId);
-
-      if (error) throw error;
-      fetchData();
-    } catch (error) {
-      console.error('Error deactivating user:', error);
-      alert('Error al desactivar usuario: ' + error.message);
-    }
+  const handleSoftDeleteUser = async (userId) => {
+    if (!confirm('¿Desactivar usuario?')) return;
+    await supabase.from('profiles').update({ is_active: false }).eq('id', userId);
+    fetchData();
   };
 
-  const openEditModal = (user) => {
+  const openEditUserModal = (user) => {
     setSelectedUser(user);
-    setFormData({
+    setUserFormData({
       email: user.email,
       full_name: user.full_name,
       role: user.role,
       assigned_projects: user.project_assignments?.map(pa => pa.project_id) || []
     });
-    setShowEditModal(true);
+    setShowEditUserModal(true);
   };
 
-  const handleProjectToggle = (projectId) => {
-    setFormData(prev => ({
+  const handleProjectAssignmentToggle = (projectId) => {
+    setUserFormData(prev => ({
       ...prev,
       assigned_projects: prev.assigned_projects.includes(projectId)
         ? prev.assigned_projects.filter(id => id !== projectId)
@@ -360,255 +332,256 @@ const AdminModule = ({ currentUser }) => {
     }));
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Spinner size="lg" />
-      </div>
-    );
-  }
+  // --- LÓGICA DE PROYECTOS ---
+
+  const handleCreateProject = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      const { error } = await supabase.from('projects').insert({
+        name: projectFormData.name,
+        code: projectFormData.code,
+        client: projectFormData.client,
+        location: projectFormData.location,
+        start_date: projectFormData.start_date,
+        end_date: projectFormData.end_date,
+        total_budget: parseFloat(projectFormData.total_budget),
+        description: projectFormData.description,
+        is_active: true
+      });
+
+      if (error) throw error;
+
+      alert('Proyecto creado exitosamente');
+      setShowCreateProjectModal(false);
+      setProjectFormData({ name: '', code: '', client: '', location: '', start_date: '', end_date: '', total_budget: '', description: '' });
+      fetchData();
+    } catch (error) {
+      alert('Error al crear proyecto: ' + error.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const toggleProjectStatus = async (project) => {
+    if (!confirm(`¿${project.is_active ? 'Desactivar' : 'Activar'} proyecto?`)) return;
+    await supabase.from('projects').update({ is_active: !project.is_active }).eq('id', project.id);
+    fetchData();
+  };
+
+  if (loading) return <div className="flex justify-center h-64"><Spinner size="lg" /></div>;
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <h2 className="text-2xl font-bold text-gray-800">Gestión de Usuarios</h2>
-        <button
-          onClick={() => {
-            setFormData({ email: '', full_name: '', role: 'foreman', assigned_projects: [] });
-            setShowCreateModal(true);
-          }}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition flex items-center gap-2"
-        >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          Nuevo Usuario
-        </button>
-      </div>
-
-      {/* Users Table */}
-      <div className="bg-white rounded-xl shadow overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Usuario</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rol</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Proyectos</th>
-                <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200">
-              {users.map(user => (
-                <tr key={user.id} className={!user.is_active ? 'bg-gray-50 opacity-60' : ''}>
-                  <td className="px-4 py-4">
-                    <div>
-                      <p className="font-medium text-gray-900">{user.full_name}</p>
-                      <p className="text-sm text-gray-500">{user.email}</p>
-                    </div>
-                  </td>
-                  <td className="px-4 py-4">
-                    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                      user.role === 'admin' ? 'bg-purple-100 text-purple-800' :
-                      user.role === 'ceo' ? 'bg-blue-100 text-blue-800' :
-                      user.role === 'engineer' ? 'bg-green-100 text-green-800' :
-                      user.role === 'foreman' ? 'bg-yellow-100 text-yellow-800' :
-                      'bg-gray-100 text-gray-800'
-                    }`}>
-                      {roles.find(r => r.value === user.role)?.label || user.role}
-                    </span>
-                  </td>
-                  <td className="px-4 py-4">
-                    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                      user.is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                    }`}>
-                      {user.is_active ? 'Activo' : 'Inactivo'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-4">
-                    <span className="text-sm text-gray-600">
-                      {user.project_assignments?.length || 0} proyecto(s)
-                    </span>
-                  </td>
-                  <td className="px-4 py-4 text-right space-x-2">
-                    <button
-                      onClick={() => openEditModal(user)}
-                      className="text-blue-600 hover:text-blue-800 font-medium text-sm"
-                    >
-                      Editar
-                    </button>
-                    {user.is_active && user.id !== currentUser?.id && (
-                      <button
-                        onClick={() => handleSoftDelete(user.id)}
-                        className="text-red-600 hover:text-red-800 font-medium text-sm"
-                      >
-                        Eliminar
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* Header & Tabs */}
+      <div className="flex flex-col sm:flex-row justify-between items-center gap-4 border-b border-gray-200 pb-4">
+        <h2 className="text-2xl font-bold text-gray-800">Panel de Administración</h2>
+        <div className="flex bg-gray-100 p-1 rounded-lg">
+          <button
+            onClick={() => setActiveTab('users')}
+            className={`px-4 py-2 rounded-md text-sm font-medium transition ${activeTab === 'users' ? 'bg-white shadow text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+          >
+            👥 Usuarios
+          </button>
+          <button
+            onClick={() => setActiveTab('projects')}
+            className={`px-4 py-2 rounded-md text-sm font-medium transition ${activeTab === 'projects' ? 'bg-white shadow text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+          >
+            📁 Proyectos
+          </button>
         </div>
       </div>
 
-      {/* Create User Modal */}
-      <Modal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} title="Crear Nuevo Usuario">
+      {/* ================= VISTA DE USUARIOS ================= */}
+      {activeTab === 'users' && (
+        <div className="space-y-4">
+          <div className="flex justify-end">
+            <button
+              onClick={() => { setUserFormData({ email: '', full_name: '', role: 'foreman', assigned_projects: [] }); setShowCreateUserModal(true); }}
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center gap-2"
+            >
+              <span>+</span> Nuevo Usuario
+            </button>
+          </div>
+
+          <div className="bg-white rounded-xl shadow overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Usuario</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Rol</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Estado</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {users.map(user => (
+                    <tr key={user.id} className={!user.is_active ? 'bg-gray-50 opacity-60' : ''}>
+                      <td className="px-4 py-4">
+                        <p className="font-medium text-gray-900">{user.full_name}</p>
+                        <p className="text-sm text-gray-500">{user.email}</p>
+                      </td>
+                      <td className="px-4 py-4">
+                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                          user.role === 'admin' ? 'bg-purple-100 text-purple-800' :
+                          user.role === 'ceo' ? 'bg-blue-100 text-blue-800' :
+                          'bg-gray-100 text-gray-800'
+                        }`}>
+                          {roles.find(r => r.value === user.role)?.label || user.role}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4">
+                        <span className={`text-xs font-bold ${user.is_active ? 'text-green-600' : 'text-red-600'}`}>
+                          {user.is_active ? 'ACTIVO' : 'INACTIVO'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4 text-right space-x-2">
+                        <button onClick={() => openEditUserModal(user)} className="text-blue-600 hover:text-blue-800 text-sm">Editar</button>
+                        {user.is_active && user.id !== currentUser?.id && (
+                          <button onClick={() => handleSoftDeleteUser(user.id)} className="text-red-600 hover:text-red-800 text-sm">Desactivar</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= VISTA DE PROYECTOS ================= */}
+      {activeTab === 'projects' && (
+        <div className="space-y-4">
+          <div className="flex justify-end">
+            <button
+              onClick={() => setShowCreateProjectModal(true)}
+              className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center gap-2"
+            >
+              <span>+</span> Nuevo Proyecto
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {projects.map(project => (
+              <div key={project.id} className={`bg-white rounded-xl shadow border p-5 ${!project.is_active ? 'opacity-75 border-gray-200 bg-gray-50' : 'border-blue-100'}`}>
+                <div className="flex justify-between items-start mb-3">
+                  <div>
+                    <h3 className="font-bold text-gray-800 text-lg">{project.name}</h3>
+                    <p className="text-sm font-mono text-gray-500">{project.code}</p>
+                  </div>
+                  <span className={`px-2 py-1 text-xs rounded-full ${project.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-600'}`}>
+                    {project.is_active ? 'Activo' : 'Inactivo'}
+                  </span>
+                </div>
+                
+                <div className="space-y-2 mb-4">
+                  <p className="text-sm text-gray-600 flex items-center gap-2">
+                    <span>🏢</span> {project.client}
+                  </p>
+                  <p className="text-sm text-gray-600 flex items-center gap-2">
+                    <span>📍</span> {project.location}
+                  </p>
+                  <p className="text-sm text-gray-600 flex items-center gap-2">
+                    <span>💰</span> {formatCurrency(project.total_budget)}
+                  </p>
+                </div>
+
+                <div className="pt-4 border-t border-gray-100 flex justify-end">
+                  <button 
+                    onClick={() => toggleProjectStatus(project)}
+                    className={`text-sm font-medium ${project.is_active ? 'text-red-600 hover:text-red-800' : 'text-green-600 hover:text-green-800'}`}
+                  >
+                    {project.is_active ? 'Desactivar Proyecto' : 'Reactivar Proyecto'}
+                  </button>
+                </div>
+              </div>
+            ))}
+            {projects.length === 0 && (
+              <div className="col-span-full text-center py-10 text-gray-500 bg-white rounded-xl border border-dashed border-gray-300">
+                No hay proyectos registrados. Crea el primero.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* --- MODALES --- */}
+
+      {/* Crear Usuario */}
+      <Modal isOpen={showCreateUserModal} onClose={() => setShowCreateUserModal(false)} title="Crear Nuevo Usuario">
         <form onSubmit={handleCreateUser} className="space-y-4">
+          <input type="email" required placeholder="Email" value={userFormData.email} onChange={e => setUserFormData({...userFormData, email: e.target.value})} className="w-full border rounded-lg px-3 py-2" />
+          <input type="text" required placeholder="Nombre Completo" value={userFormData.full_name} onChange={e => setUserFormData({...userFormData, full_name: e.target.value})} className="w-full border rounded-lg px-3 py-2" />
+          <select value={userFormData.role} onChange={e => setUserFormData({...userFormData, role: e.target.value})} className="w-full border rounded-lg px-3 py-2">
+            {roles.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+          </select>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-            <input
-              type="email"
-              required
-              value={formData.email}
-              onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="usuario@empresa.com"
-            />
+             <label className="block text-sm font-medium text-gray-700 mb-1">Asignar Proyectos</label>
+             <div className="max-h-32 overflow-y-auto border rounded p-2">
+                {projects.map(p => (
+                   <label key={p.id} className="flex items-center gap-2 p-1 hover:bg-gray-50 cursor-pointer">
+                      <input type="checkbox" checked={userFormData.assigned_projects.includes(p.id)} onChange={() => handleProjectAssignmentToggle(p.id)} />
+                      <span className="text-sm">{p.name}</span>
+                   </label>
+                ))}
+             </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Nombre Completo</label>
-            <input
-              type="text"
-              required
-              value={formData.full_name}
-              onChange={(e) => setFormData(prev => ({ ...prev, full_name: e.target.value }))}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="Juan Pérez"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Rol</label>
-            <select
-              value={formData.role}
-              onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value }))}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              {roles.map(role => (
-                <option key={role.value} value={role.value}>{role.label}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Proyectos Asignados</label>
-            <div className="max-h-40 overflow-y-auto border border-gray-200 rounded-lg p-2 space-y-2">
-              {projects.map(project => (
-                <label key={project.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-1 rounded">
-                  <input
-                    type="checkbox"
-                    checked={formData.assigned_projects.includes(project.id)}
-                    onChange={() => handleProjectToggle(project.id)}
-                    className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
-                  />
-                  <span className="text-sm text-gray-700">{project.name}</span>
-                </label>
-              ))}
-              {projects.length === 0 && (
-                <p className="text-sm text-gray-500 text-center py-2">No hay proyectos disponibles</p>
-              )}
-            </div>
-          </div>
-          <div className="flex gap-3 pt-4">
-            <button
-              type="button"
-              onClick={() => setShowCreateModal(false)}
-              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
-            >
-              {submitting && <Spinner size="sm" />}
-              {submitting ? 'Creando...' : 'Crear Usuario'}
-            </button>
-          </div>
+          <button type="submit" disabled={submitting} className="w-full bg-blue-600 text-white py-2 rounded-lg">{submitting ? 'Creando...' : 'Crear Usuario'}</button>
         </form>
       </Modal>
 
-      {/* Edit User Modal */}
-      <Modal isOpen={showEditModal} onClose={() => setShowEditModal(false)} title="Editar Usuario">
-        <form onSubmit={handleEditUser} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-            <input
-              type="email"
-              disabled
-              value={formData.email}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-gray-500"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Nombre Completo</label>
-            <input
-              type="text"
-              required
-              value={formData.full_name}
-              onChange={(e) => setFormData(prev => ({ ...prev, full_name: e.target.value }))}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Rol</label>
-            <select
-              value={formData.role}
-              onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value }))}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              {roles.map(role => (
-                <option key={role.value} value={role.value}>{role.label}</option>
-              ))}
+      {/* Editar Usuario */}
+      <Modal isOpen={showEditUserModal} onClose={() => setShowEditUserModal(false)} title="Editar Usuario">
+         <form onSubmit={handleEditUser} className="space-y-4">
+            <input type="email" disabled value={userFormData.email} className="w-full border rounded-lg px-3 py-2 bg-gray-100" />
+            <input type="text" required value={userFormData.full_name} onChange={e => setUserFormData({...userFormData, full_name: e.target.value})} className="w-full border rounded-lg px-3 py-2" />
+            <select value={userFormData.role} onChange={e => setUserFormData({...userFormData, role: e.target.value})} className="w-full border rounded-lg px-3 py-2">
+               {roles.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
             </select>
+            <div>
+               <label className="block text-sm font-medium text-gray-700 mb-1">Asignar Proyectos</label>
+               <div className="max-h-32 overflow-y-auto border rounded p-2">
+                  {projects.map(p => (
+                     <label key={p.id} className="flex items-center gap-2 p-1 hover:bg-gray-50 cursor-pointer">
+                        <input type="checkbox" checked={userFormData.assigned_projects.includes(p.id)} onChange={() => handleProjectAssignmentToggle(p.id)} />
+                        <span className="text-sm">{p.name}</span>
+                     </label>
+                  ))}
+               </div>
+            </div>
+            <button type="submit" disabled={submitting} className="w-full bg-blue-600 text-white py-2 rounded-lg">{submitting ? 'Guardando...' : 'Guardar Cambios'}</button>
+         </form>
+      </Modal>
+
+      {/* Crear Proyecto */}
+      <Modal isOpen={showCreateProjectModal} onClose={() => setShowCreateProjectModal(false)} title="Crear Nuevo Proyecto">
+        <form onSubmit={handleCreateProject} className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <input type="text" required placeholder="Código (ej. PRJ-001)" value={projectFormData.code} onChange={e => setProjectFormData({...projectFormData, code: e.target.value})} className="border rounded-lg px-3 py-2" />
+            <input type="number" required placeholder="Presupuesto Total" value={projectFormData.total_budget} onChange={e => setProjectFormData({...projectFormData, total_budget: e.target.value})} className="border rounded-lg px-3 py-2" />
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Proyectos Asignados</label>
-            <div className="max-h-40 overflow-y-auto border border-gray-200 rounded-lg p-2 space-y-2">
-              {projects.map(project => (
-                <label key={project.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-1 rounded">
-                  <input
-                    type="checkbox"
-                    checked={formData.assigned_projects.includes(project.id)}
-                    onChange={() => handleProjectToggle(project.id)}
-                    className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
-                  />
-                  <span className="text-sm text-gray-700">{project.name}</span>
-                </label>
-              ))}
+          <input type="text" required placeholder="Nombre del Proyecto" value={projectFormData.name} onChange={e => setProjectFormData({...projectFormData, name: e.target.value})} className="w-full border rounded-lg px-3 py-2" />
+          <input type="text" required placeholder="Cliente" value={projectFormData.client} onChange={e => setProjectFormData({...projectFormData, client: e.target.value})} className="w-full border rounded-lg px-3 py-2" />
+          <input type="text" required placeholder="Ubicación" value={projectFormData.location} onChange={e => setProjectFormData({...projectFormData, location: e.target.value})} className="w-full border rounded-lg px-3 py-2" />
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-xs text-gray-500">Fecha Inicio</label>
+              <input type="date" required value={projectFormData.start_date} onChange={e => setProjectFormData({...projectFormData, start_date: e.target.value})} className="w-full border rounded-lg px-3 py-2" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">Fecha Fin</label>
+              <input type="date" required value={projectFormData.end_date} onChange={e => setProjectFormData({...projectFormData, end_date: e.target.value})} className="w-full border rounded-lg px-3 py-2" />
             </div>
           </div>
-          <div className="flex gap-3 pt-4">
-            <button
-              type="button"
-              onClick={() => setShowEditModal(false)}
-              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
-            >
-              {submitting && <Spinner size="sm" />}
-              {submitting ? 'Guardando...' : 'Guardar Cambios'}
-            </button>
-          </div>
+          <textarea placeholder="Descripción del proyecto..." value={projectFormData.description} onChange={e => setProjectFormData({...projectFormData, description: e.target.value})} className="w-full border rounded-lg px-3 py-2" rows="2"></textarea>
+          
+          <button type="submit" disabled={submitting} className="w-full bg-green-600 text-white py-2 rounded-lg">{submitting ? 'Creando...' : 'Crear Proyecto'}</button>
         </form>
       </Modal>
 
-      {/* Password Modal */}
-      <PasswordModal
-        isOpen={showPasswordModal}
-        onClose={() => {
-          setShowPasswordModal(false);
-          setCreatedUserData(null);
-        }}
-        userData={createdUserData}
-      />
+      <PasswordModal isOpen={showPasswordModal} onClose={() => { setShowPasswordModal(false); setCreatedUserData(null); }} userData={createdUserData} />
     </div>
   );
 };
@@ -1440,8 +1413,10 @@ const CEOModule = () => {
   const [loading, setLoading] = useState(true);
   const [projects, setProjects] = useState([]);
   const [cashFlowData, setCashFlowData] = useState([]);
+  
+  // Aquí usamos estado simple para el modal, NO localStorage
   const [selectedProject, setSelectedProject] = useState(null);
-
+  
   const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
 
   useEffect(() => {
@@ -1854,21 +1829,54 @@ const LogisticsModule = ({ project }) => {
     </div>
   );
 };
-
-// ============== MAIN APP COMPONENT ==============
+// ============== MAIN APP COMPONENT (VERSION CORREGIDA CON LOGOUT GLOBAL) ==============
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
   const [projects, setProjects] = useState([]);
-  const [selectedProject, setSelectedProject] = useState(null);
+
+  // Recuperar proyecto de localStorage de forma segura
+  const [selectedProject, setSelectedProject] = useState(() => {
+    try {
+      const saved = localStorage.getItem('erp_active_project');
+      if (!saved || saved === "undefined" || saved === "null") return null;
+      return JSON.parse(saved);
+    } catch (e) {
+      return null;
+    }
+  });
+
+  // Persistir proyecto seleccionado
+  useEffect(() => {
+    try {
+      if (selectedProject) {
+        localStorage.setItem('erp_active_project', JSON.stringify(selectedProject));
+      }
+    } catch (e) {
+      console.warn("Error guardando proyecto", e);
+    }
+  }, [selectedProject]);
+
+  // Configurar Título y Favicon
+  useEffect(() => {
+    let link = document.querySelector("link[rel~='icon']");
+    if (!link) {
+      link = document.createElement('link');
+      link.rel = 'icon';
+      document.head.appendChild(link);
+    }
+    link.href = "https://img.freepik.com/vector-premium/diseno-logotipo-vector-e-construccion_1067270-1376.jpg";
+    document.title = "ERP Construcción";
+  }, []);
+
   const [activeModule, setActiveModule] = useState('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
 
-  // Check auth state on mount
+  // Verificar sesión al inicio
   useEffect(() => {
     const checkAuth = async () => {
       try {
@@ -1907,6 +1915,7 @@ export default function App() {
         setProfile(null);
         setProjects([]);
         setSelectedProject(null);
+        localStorage.removeItem('erp_active_project');
       }
     });
 
@@ -1933,6 +1942,9 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    // Limpiamos estados locales antes de salir para evitar parpadeos
+    setSelectedProject(null);
+    localStorage.removeItem('erp_active_project');
     await supabase.auth.signOut();
   };
 
@@ -1954,7 +1966,6 @@ export default function App() {
         { id: 'materials', label: 'Materiales', icon: 'M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4' }
       ]
     };
-
     return modules[role] || [];
   };
 
@@ -1964,50 +1975,60 @@ export default function App() {
 
   const renderContent = () => {
     if (!profile) return null;
-
     const role = profile.role;
 
-    // Admin module
-    if (role === 'admin') {
-      return <AdminModule currentUser={profile} />;
-    }
+    if (role === 'admin') return <AdminModule currentUser={profile} />;
+    if (role === 'ceo') return <CEOModule />;
 
-    // CEO module
-    if (role === 'ceo') {
-      return <CEOModule />;
-    }
-
-    // Roles that need project selection
+    // --- CORRECCIÓN AQUÍ: PANTALLA DE SELECCIÓN DE PROYECTO CON BOTÓN SALIR ---
     if (needsProjectSelection(role) && !selectedProject) {
       return (
-        <div className="flex flex-col items-center justify-center h-64 text-center">
-          <svg className="w-16 h-16 text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-          </svg>
-          <h3 className="text-xl font-semibold text-gray-700 mb-2">Seleccione un Proyecto</h3>
-          <p className="text-gray-500">Use el menú lateral para elegir un proyecto</p>
+        <div className="flex flex-col items-center justify-center h-[70vh] text-center p-4">
+          <div className="bg-white p-8 rounded-2xl shadow-lg max-w-md w-full border border-gray-100">
+            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-6">
+              <svg className="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+              </svg>
+            </div>
+            <h3 className="text-xl font-bold text-gray-800 mb-2">Seleccione un Proyecto</h3>
+            <p className="text-gray-500 mb-8">
+              Para comenzar a trabajar, abra el menú lateral y seleccione el proyecto asignado.
+            </p>
+            
+            <div className="space-y-3">
+              <button 
+                onClick={() => setSidebarOpen(true)}
+                className="w-full bg-blue-600 text-white py-3 rounded-xl font-medium hover:bg-blue-700 transition md:hidden"
+              >
+                Abrir Menú de Proyectos
+              </button>
+              
+              <button 
+                onClick={handleLogout}
+                className="w-full border border-red-200 text-red-600 py-3 rounded-xl font-medium hover:bg-red-50 transition flex items-center justify-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                </svg>
+                Cerrar Sesión
+              </button>
+            </div>
+          </div>
         </div>
       );
     }
 
     switch (role) {
-      case 'engineer':
-        return <EngineerModule project={selectedProject} />;
-      case 'foreman':
-        return <ForemanModule project={selectedProject} currentUser={profile} />;
-      case 'logistics':
-        return <LogisticsModule project={selectedProject} />;
-      default:
-        return <div className="text-center py-12 text-gray-500">Rol no reconocido</div>;
+      case 'engineer': return <EngineerModule project={selectedProject} />;
+      case 'foreman': return <ForemanModule project={selectedProject} currentUser={profile} />;
+      case 'logistics': return <LogisticsModule project={selectedProject} />;
+      default: return <div className="text-center py-12 text-gray-500">Rol no reconocido</div>;
     }
   };
 
-  // Loading state
-  if (loading) {
-    return <LoadingOverlay message="Cargando aplicación..." />;
-  }
+  if (loading) return <LoadingOverlay message="Cargando aplicación..." />;
 
-  // Login screen
+  // Login Screen
   if (!user) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-600 to-purple-700 flex items-center justify-center p-4">
@@ -2023,41 +2044,16 @@ export default function App() {
           </div>
 
           <form onSubmit={handleLogin} className="space-y-4">
-            {loginError && (
-              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
-                {loginError}
-              </div>
-            )}
-
+            {loginError && <div className="bg-red-50 text-red-700 px-4 py-3 rounded-lg text-sm">{loginError}</div>}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Correo Electrónico</label>
-              <input
-                type="email"
-                required
-                value={loginForm.email}
-                onChange={(e) => setLoginForm(prev => ({ ...prev, email: e.target.value }))}
-                className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                placeholder="usuario@empresa.com"
-              />
+              <input type="email" required value={loginForm.email} onChange={(e) => setLoginForm(prev => ({ ...prev, email: e.target.value }))} className="w-full border rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500" placeholder="usuario@empresa.com" />
             </div>
-
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Contraseña</label>
-              <input
-                type="password"
-                required
-                value={loginForm.password}
-                onChange={(e) => setLoginForm(prev => ({ ...prev, password: e.target.value }))}
-                className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                placeholder="••••••••"
-              />
+              <input type="password" required value={loginForm.password} onChange={(e) => setLoginForm(prev => ({ ...prev, password: e.target.value }))} className="w-full border rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500" placeholder="••••••••" />
             </div>
-
-            <button
-              type="submit"
-              disabled={loginLoading}
-              className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
-            >
+            <button type="submit" disabled={loginLoading} className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition disabled:opacity-50 flex items-center justify-center gap-2">
               {loginLoading && <Spinner size="sm" />}
               {loginLoading ? 'Ingresando...' : 'Ingresar'}
             </button>
@@ -2072,104 +2068,43 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-100 flex">
-      {/* Mobile Hamburger Button */}
-      <button
-        onClick={() => setSidebarOpen(true)}
-        className="md:hidden fixed top-4 left-4 z-40 bg-white p-2 rounded-lg shadow-lg"
-      >
-        <svg className="w-6 h-6 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-        </svg>
+      {/* Botón Hamburguesa Móvil */}
+      <button onClick={() => setSidebarOpen(true)} className="md:hidden fixed top-4 left-4 z-40 bg-white p-2 rounded-lg shadow-lg text-gray-700">
+        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
       </button>
 
-      {/* Sidebar Overlay (Mobile) */}
-      {sidebarOpen && (
-        <div
-          className="md:hidden fixed inset-0 bg-black/50 z-40"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
+      {/* Sidebar Overlay */}
+      {sidebarOpen && <div className="md:hidden fixed inset-0 bg-black/50 z-40" onClick={() => setSidebarOpen(false)} />}
 
       {/* Sidebar */}
-      <aside
-        className={`fixed md:static inset-y-0 left-0 z-50 w-64 bg-gray-900 text-white transform transition-transform duration-300 ${
-          sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
-        }`}
-      >
+      <aside className={`fixed md:static inset-y-0 left-0 z-50 w-64 bg-gray-900 text-white transform transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
         <div className="flex flex-col h-full">
-          {/* Logo */}
-          <div className="p-4 border-b border-gray-800">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center">
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                  </svg>
-                </div>
-                <span className="font-bold text-lg">Control Obras</span>
-              </div>
-              <button
-                onClick={() => setSidebarOpen(false)}
-                className="md:hidden p-1 hover:bg-gray-800 rounded"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+          <div className="p-4 border-b border-gray-800 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-blue-600 rounded flex items-center justify-center font-bold">ERP</div>
+              <span className="font-bold text-lg">Control Obras</span>
             </div>
+            <button onClick={() => setSidebarOpen(false)} className="md:hidden text-gray-400">✕</button>
           </div>
 
-          {/* User Info */}
           <div className="p-4 border-b border-gray-800">
             <p className="font-medium truncate">{profile?.full_name}</p>
             <p className="text-sm text-gray-400 capitalize">{profile?.role}</p>
           </div>
 
-          {/* Navigation */}
           <nav className="flex-1 overflow-y-auto p-4 space-y-2">
-            {/* Module Links */}
             {modules.map(module => (
-              <button
-                key={module.id}
-                onClick={() => {
-                  setActiveModule(module.id);
-                  setSidebarOpen(false);
-                }}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition ${
-                  activeModule === module.id
-                    ? 'bg-blue-600 text-white'
-                    : 'text-gray-300 hover:bg-gray-800'
-                }`}
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={module.icon} />
-                </svg>
+              <button key={module.id} onClick={() => { setActiveModule(module.id); setSidebarOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition ${activeModule === module.id ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-gray-800'}`}>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={module.icon} /></svg>
                 {module.label}
               </button>
             ))}
 
-            {/* Projects Section */}
             {showProjects && projects.length > 0 && (
               <div className="mt-6">
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-4">
-                  Proyectos
-                </p>
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-4">Proyectos Asignados</p>
                 {projects.map(project => (
-                  <button
-                    key={project.id}
-                    onClick={() => {
-                      setSelectedProject(project);
-                      setSidebarOpen(false);
-                    }}
-                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition ${
-                      selectedProject?.id === project.id
-                        ? 'bg-blue-600 text-white'
-                        : 'text-gray-300 hover:bg-gray-800'
-                    }`}
-                  >
-                    <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                    </svg>
+                  <button key={project.id} onClick={() => { setSelectedProject(project); setSidebarOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition ${selectedProject?.id === project.id ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-gray-800'}`}>
                     <span className="truncate">{project.name}</span>
                   </button>
                 ))}
@@ -2177,15 +2112,9 @@ export default function App() {
             )}
           </nav>
 
-          {/* Logout */}
           <div className="p-4 border-t border-gray-800">
-            <button
-              onClick={handleLogout}
-              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-gray-300 hover:bg-gray-800 transition"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-              </svg>
+            <button onClick={handleLogout} className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-red-300 hover:bg-gray-800 hover:text-red-200 transition">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
               Cerrar Sesión
             </button>
           </div>
@@ -2193,39 +2122,26 @@ export default function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-auto">
-        {/* Top Header */}
-        <header className="bg-white shadow-sm px-4 md:px-6 py-4 sticky top-0 z-30">
-          <div className="flex items-center justify-between">
-            <div className="ml-10 md:ml-0">
-              {selectedProject ? (
-                <div>
-                  <h1 className="text-xl font-bold text-gray-800">{selectedProject.name}</h1>
-                  <p className="text-sm text-gray-500">{selectedProject.location || 'Sin ubicación'}</p>
-                </div>
-              ) : (
-                <h1 className="text-xl font-bold text-gray-800">
-                  {profile?.role === 'admin' ? 'Administración' :
-                   profile?.role === 'ceo' ? 'Dashboard Ejecutivo' :
-                   'Sistema de Control de Obras'}
-                </h1>
-              )}
-            </div>
-            <div className="flex items-center gap-4">
-              <span className="hidden sm:block text-sm text-gray-500">
-                {new Date().toLocaleDateString('es-PE', { 
-                  weekday: 'long', 
-                  year: 'numeric', 
-                  month: 'long', 
-                  day: 'numeric' 
-                })}
-              </span>
-            </div>
+      <main className="flex-1 overflow-auto flex flex-col h-screen">
+        <header className="bg-white shadow-sm px-4 md:px-6 py-3 sticky top-0 z-30 flex items-center justify-between">
+          <div className="ml-10 md:ml-0">
+             <h1 className="text-lg font-bold text-gray-800 truncate max-w-[200px] md:max-w-none">
+               {selectedProject ? selectedProject.name : (profile?.role === 'admin' ? 'Administración' : 'Panel de Control')}
+             </h1>
+             {selectedProject && <p className="text-xs text-gray-500 hidden md:block">{selectedProject.location}</p>}
+          </div>
+          <div className="flex items-center gap-3">
+             <span className="text-sm text-gray-500 hidden sm:block">
+               {new Date().toLocaleDateString('es-PE', { weekday: 'short', day: 'numeric', month: 'short' })}
+             </span>
+             {/* --- BOTÓN DE SALIR EN HEADER --- */}
+             <button onClick={handleLogout} className="p-2 text-gray-500 hover:bg-red-50 hover:text-red-600 rounded-full transition" title="Cerrar Sesión">
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+             </button>
           </div>
         </header>
 
-        {/* Page Content */}
-        <div className="p-4 md:p-6">
+        <div className="p-4 md:p-6 flex-1 overflow-y-auto">
           {renderContent()}
         </div>
       </main>
