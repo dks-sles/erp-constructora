@@ -157,38 +157,32 @@ const PasswordModal = ({ isOpen, onClose, userData }) => {
   );
 };
 
-// ============== ADMIN MODULE (CORREGIDO Y COMPLETO) ==============
+// ============== ADMIN MODULE (ACTUALIZADO: Editable + Fix) ==============
 const AdminModule = ({ currentUser }) => {
-  const [activeTab, setActiveTab] = useState('users'); // 'users' | 'projects'
-  const [users, setUsers] = useState([]);
-  const [projects, setProjects] = useState([]);
+  const [activeTab, setActiveTab] = useState('projects'); // Empezar en proyectos
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [users, setUsers] = useState([]);
+  const [projects, setProjects] = useState([]);
 
-  // Estados para Usuarios
+  // --- ESTADOS PARA PROYECTOS (NUEVO) ---
+  const [showProjectModal, setShowProjectModal] = useState(false);
+  const [editingProject, setEditingProject] = useState(null); // Para saber si editamos
+  
+  // Formulario Proyecto Unificado
+  const [projectForm, setProjectForm] = useState({
+    name: '', code: '', client: '', location: '', 
+    start_date: '', end_date: '', total_budget: '', description: ''
+  });
+
+  // --- ESTADOS PARA USUARIOS (MANTENIDOS) ---
   const [showCreateUserModal, setShowCreateUserModal] = useState(false);
   const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [createdUserData, setCreatedUserData] = useState(null);
   const [selectedUser, setSelectedUser] = useState(null);
   const [userFormData, setUserFormData] = useState({
-    email: '',
-    full_name: '',
-    role: 'foreman',
-    assigned_projects: []
-  });
-
-  // Estados para Proyectos
-  const [showCreateProjectModal, setShowCreateProjectModal] = useState(false);
-  const [projectFormData, setProjectFormData] = useState({
-    name: '',
-    code: '',
-    client: '',
-    location: '',
-    start_date: '',
-    end_date: '',
-    total_budget: '',
-    description: ''
+    email: '', full_name: '', role: 'foreman', assigned_projects: []
   });
 
   const roles = [
@@ -202,25 +196,77 @@ const AdminModule = ({ currentUser }) => {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [usersRes, projectsRes] = await Promise.all([
+      const [u, p] = await Promise.all([
         supabase.from('profiles').select('*, project_assignments(project_id)').order('created_at', { ascending: false }),
         supabase.from('projects').select('*').order('created_at', { ascending: false })
       ]);
-
-      if (usersRes.data) setUsers(usersRes.data);
-      if (projectsRes.data) setProjects(projectsRes.data);
-    } catch (error) {
-      console.error('Error fetching admin data:', error);
-    } finally {
-      setLoading(false);
-    }
+      if (u.data) setUsers(u.data);
+      if (p.data) setProjects(p.data);
+    } catch (e) { console.error(e); } 
+    finally { setLoading(false); }
   }, []);
 
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+  useEffect(() => { fetchData(); }, [fetchData]);
 
-  // --- LÓGICA DE USUARIOS ---
+  // --- LÓGICA DE PROYECTOS (MEJORADA) ---
+
+  // Abrir modal para crear
+  const handleOpenCreateProject = () => {
+    setEditingProject(null);
+    setProjectForm({ name: '', code: '', client: '', location: '', start_date: '', end_date: '', total_budget: '', description: '' });
+    setShowProjectModal(true);
+  };
+
+  // Abrir modal para editar
+  const handleOpenEditProject = (project) => {
+    setEditingProject(project);
+    setProjectForm({
+      name: project.name,
+      code: project.code,
+      client: project.client,
+      location: project.location,
+      start_date: project.start_date,
+      end_date: project.end_date,
+      total_budget: project.total_budget,
+      description: project.description || ''
+    });
+    setShowProjectModal(true);
+  };
+
+  const handleSaveProject = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      if (editingProject) {
+        // ACTUALIZAR
+        const { error } = await supabase.from('projects')
+          .update(projectForm)
+          .eq('id', editingProject.id);
+        if (error) throw error;
+        alert('Proyecto actualizado exitosamente');
+      } else {
+        // CREAR
+        const { error } = await supabase.from('projects')
+          .insert([{ ...projectForm, is_active: true }]);
+        if (error) throw error;
+        alert('Proyecto creado exitosamente');
+      }
+      setShowProjectModal(false);
+      fetchData();
+    } catch (error) {
+      alert('Error: ' + error.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const toggleProjectStatus = async (project) => {
+    if (!confirm(`¿${project.is_active ? 'Desactivar' : 'Activar'} proyecto?`)) return;
+    await supabase.from('projects').update({ is_active: !project.is_active }).eq('id', project.id);
+    fetchData();
+  };
+
+  // --- LÓGICA DE USUARIOS (MANTENIDA) ---
 
   const handleCreateUser = async (e) => {
     e.preventDefault();
@@ -332,65 +378,66 @@ const AdminModule = ({ currentUser }) => {
     }));
   };
 
-  // --- LÓGICA DE PROYECTOS ---
-
-  const handleCreateProject = async (e) => {
-    e.preventDefault();
-    setSubmitting(true);
-    try {
-      const { error } = await supabase.from('projects').insert({
-        name: projectFormData.name,
-        code: projectFormData.code,
-        client: projectFormData.client,
-        location: projectFormData.location,
-        start_date: projectFormData.start_date,
-        end_date: projectFormData.end_date,
-        total_budget: parseFloat(projectFormData.total_budget),
-        description: projectFormData.description,
-        is_active: true
-      });
-
-      if (error) throw error;
-
-      alert('Proyecto creado exitosamente');
-      setShowCreateProjectModal(false);
-      setProjectFormData({ name: '', code: '', client: '', location: '', start_date: '', end_date: '', total_budget: '', description: '' });
-      fetchData();
-    } catch (error) {
-      alert('Error al crear proyecto: ' + error.message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const toggleProjectStatus = async (project) => {
-    if (!confirm(`¿${project.is_active ? 'Desactivar' : 'Activar'} proyecto?`)) return;
-    await supabase.from('projects').update({ is_active: !project.is_active }).eq('id', project.id);
-    fetchData();
-  };
-
   if (loading) return <div className="flex justify-center h-64"><Spinner size="lg" /></div>;
 
   return (
     <div className="space-y-6">
-      {/* Header & Tabs */}
       <div className="flex flex-col sm:flex-row justify-between items-center gap-4 border-b border-gray-200 pb-4">
         <h2 className="text-2xl font-bold text-gray-800">Panel de Administración</h2>
-        <div className="flex bg-gray-100 p-1 rounded-lg">
-          <button
-            onClick={() => setActiveTab('users')}
-            className={`px-4 py-2 rounded-md text-sm font-medium transition ${activeTab === 'users' ? 'bg-white shadow text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
-          >
-            👥 Usuarios
-          </button>
-          <button
-            onClick={() => setActiveTab('projects')}
-            className={`px-4 py-2 rounded-md text-sm font-medium transition ${activeTab === 'projects' ? 'bg-white shadow text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
-          >
-            📁 Proyectos
-          </button>
+        <div className="flex gap-2 bg-gray-100 p-1 rounded-lg">
+          <button onClick={() => setActiveTab('projects')} className={`px-4 py-2 rounded-md text-sm font-medium transition ${activeTab==='projects'?'bg-white shadow text-blue-600':'text-gray-500 hover:text-gray-700'}`}>📁 Proyectos</button>
+          <button onClick={() => setActiveTab('users')} className={`px-4 py-2 rounded-md text-sm font-medium transition ${activeTab==='users'?'bg-white shadow text-blue-600':'text-gray-500 hover:text-gray-700'}`}>👥 Usuarios</button>
         </div>
       </div>
+
+      {/* ================= VISTA DE PROYECTOS ================= */}
+      {activeTab === 'projects' && (
+        <div className="space-y-4">
+          <div className="flex justify-end">
+            <button onClick={handleOpenCreateProject} className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center gap-2">
+              <span>+</span> Nuevo Proyecto
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {projects.map(p => (
+              <div key={p.id} className={`bg-white p-5 rounded-xl border ${p.is_active ? 'border-blue-100 shadow-sm' : 'border-gray-200 bg-gray-50 opacity-70'}`}>
+                <div className="flex justify-between items-start mb-2">
+                  <div>
+                    <h3 className="font-bold text-gray-800 text-lg">{p.name}</h3>
+                    <p className="text-xs font-mono text-gray-500">{p.code}</p>
+                  </div>
+                  <button onClick={() => handleOpenEditProject(p)} className="text-blue-600 hover:bg-blue-50 p-2 rounded-full transition" title="Editar">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                  </button>
+                </div>
+                
+                <div className="text-sm space-y-2 text-gray-600 mb-4 mt-2">
+                  <p className="flex items-center gap-2"><span>🏢</span> {p.client}</p>
+                  <p className="flex items-center gap-2"><span>📍</span> {p.location}</p>
+                  <p className="flex items-center gap-2"><span>💰</span> {formatCurrency(p.total_budget)}</p>
+                  <div className="flex gap-4 text-xs text-gray-400 mt-2">
+                     <span>Inicio: {p.start_date}</span>
+                     <span>Fin: {p.end_date}</span>
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-gray-100 flex justify-end">
+                  <button 
+                    onClick={() => toggleProjectStatus(p)} 
+                    className={`text-sm font-medium ${p.is_active ? 'text-red-600 hover:text-red-800' : 'text-green-600 hover:text-green-800'}`}>
+                    {p.is_active ? 'Desactivar Proyecto' : 'Reactivar Proyecto'}
+                  </button>
+                </div>
+              </div>
+            ))}
+            {projects.length === 0 && (
+              <div className="col-span-full text-center py-10 text-gray-500 bg-white rounded-xl border border-dashed border-gray-300">
+                No hay proyectos registrados. Crea el primero.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ================= VISTA DE USUARIOS ================= */}
       {activeTab === 'users' && (
@@ -451,65 +498,35 @@ const AdminModule = ({ currentUser }) => {
         </div>
       )}
 
-      {/* ================= VISTA DE PROYECTOS ================= */}
-      {activeTab === 'projects' && (
-        <div className="space-y-4">
-          <div className="flex justify-end">
-            <button
-              onClick={() => setShowCreateProjectModal(true)}
-              className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center gap-2"
-            >
-              <span>+</span> Nuevo Proyecto
-            </button>
+      {/* MODAL PROYECTO (SIRVE PARA CREAR Y EDITAR) */}
+      <Modal isOpen={showProjectModal} onClose={() => setShowProjectModal(false)} title={editingProject ? "Editar Proyecto" : "Nuevo Proyecto"}>
+        <form onSubmit={handleSaveProject} className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <input required placeholder="Código (ej. PRJ-001)" value={projectForm.code} onChange={e=>setProjectForm({...projectForm, code: e.target.value})} className="border rounded-lg px-3 py-2 w-full" />
+            <input required type="number" placeholder="Presupuesto Total" value={projectForm.total_budget} onChange={e=>setProjectForm({...projectForm, total_budget: e.target.value})} className="border rounded-lg px-3 py-2 w-full" />
           </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {projects.map(project => (
-              <div key={project.id} className={`bg-white rounded-xl shadow border p-5 ${!project.is_active ? 'opacity-75 border-gray-200 bg-gray-50' : 'border-blue-100'}`}>
-                <div className="flex justify-between items-start mb-3">
-                  <div>
-                    <h3 className="font-bold text-gray-800 text-lg">{project.name}</h3>
-                    <p className="text-sm font-mono text-gray-500">{project.code}</p>
-                  </div>
-                  <span className={`px-2 py-1 text-xs rounded-full ${project.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-600'}`}>
-                    {project.is_active ? 'Activo' : 'Inactivo'}
-                  </span>
-                </div>
-                
-                <div className="space-y-2 mb-4">
-                  <p className="text-sm text-gray-600 flex items-center gap-2">
-                    <span>🏢</span> {project.client}
-                  </p>
-                  <p className="text-sm text-gray-600 flex items-center gap-2">
-                    <span>📍</span> {project.location}
-                  </p>
-                  <p className="text-sm text-gray-600 flex items-center gap-2">
-                    <span>💰</span> {formatCurrency(project.total_budget)}
-                  </p>
-                </div>
-
-                <div className="pt-4 border-t border-gray-100 flex justify-end">
-                  <button 
-                    onClick={() => toggleProjectStatus(project)}
-                    className={`text-sm font-medium ${project.is_active ? 'text-red-600 hover:text-red-800' : 'text-green-600 hover:text-green-800'}`}
-                  >
-                    {project.is_active ? 'Desactivar Proyecto' : 'Reactivar Proyecto'}
-                  </button>
-                </div>
-              </div>
-            ))}
-            {projects.length === 0 && (
-              <div className="col-span-full text-center py-10 text-gray-500 bg-white rounded-xl border border-dashed border-gray-300">
-                No hay proyectos registrados. Crea el primero.
-              </div>
-            )}
+          <input required placeholder="Nombre del Proyecto" value={projectForm.name} onChange={e=>setProjectForm({...projectForm, name: e.target.value})} className="border rounded-lg px-3 py-2 w-full" />
+          <input required placeholder="Cliente" value={projectForm.client} onChange={e=>setProjectForm({...projectForm, client: e.target.value})} className="border rounded-lg px-3 py-2 w-full" />
+          <input required placeholder="Ubicación" value={projectForm.location} onChange={e=>setProjectForm({...projectForm, location: e.target.value})} className="border rounded-lg px-3 py-2 w-full" />
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-xs text-gray-500">Fecha Inicio</label>
+              <input type="date" required value={projectForm.start_date} onChange={e=>setProjectForm({...projectForm, start_date: e.target.value})} className="border rounded-lg px-3 py-2 w-full" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">Fecha Fin</label>
+              <input type="date" required value={projectForm.end_date} onChange={e=>setProjectForm({...projectForm, end_date: e.target.value})} className="border rounded-lg px-3 py-2 w-full" />
+            </div>
           </div>
-        </div>
-      )}
+          <textarea placeholder="Descripción del proyecto..." value={projectForm.description} onChange={e => setProjectForm({...projectForm, description: e.target.value})} className="w-full border rounded-lg px-3 py-2" rows="2"></textarea>
+          
+          <button disabled={submitting} type="submit" className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition">
+            {submitting ? 'Guardando...' : (editingProject ? 'Guardar Cambios' : 'Crear Proyecto')}
+          </button>
+        </form>
+      </Modal>
 
-      {/* --- MODALES --- */}
-
-      {/* Crear Usuario */}
+      {/* Modales de Usuario (Crear, Editar, Password) - Mantenidos igual que antes */}
       <Modal isOpen={showCreateUserModal} onClose={() => setShowCreateUserModal(false)} title="Crear Nuevo Usuario">
         <form onSubmit={handleCreateUser} className="space-y-4">
           <input type="email" required placeholder="Email" value={userFormData.email} onChange={e => setUserFormData({...userFormData, email: e.target.value})} className="w-full border rounded-lg px-3 py-2" />
@@ -532,7 +549,6 @@ const AdminModule = ({ currentUser }) => {
         </form>
       </Modal>
 
-      {/* Editar Usuario */}
       <Modal isOpen={showEditUserModal} onClose={() => setShowEditUserModal(false)} title="Editar Usuario">
          <form onSubmit={handleEditUser} className="space-y-4">
             <input type="email" disabled value={userFormData.email} className="w-full border rounded-lg px-3 py-2 bg-gray-100" />
@@ -553,32 +569,6 @@ const AdminModule = ({ currentUser }) => {
             </div>
             <button type="submit" disabled={submitting} className="w-full bg-blue-600 text-white py-2 rounded-lg">{submitting ? 'Guardando...' : 'Guardar Cambios'}</button>
          </form>
-      </Modal>
-
-      {/* Crear Proyecto */}
-      <Modal isOpen={showCreateProjectModal} onClose={() => setShowCreateProjectModal(false)} title="Crear Nuevo Proyecto">
-        <form onSubmit={handleCreateProject} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <input type="text" required placeholder="Código (ej. PRJ-001)" value={projectFormData.code} onChange={e => setProjectFormData({...projectFormData, code: e.target.value})} className="border rounded-lg px-3 py-2" />
-            <input type="number" required placeholder="Presupuesto Total" value={projectFormData.total_budget} onChange={e => setProjectFormData({...projectFormData, total_budget: e.target.value})} className="border rounded-lg px-3 py-2" />
-          </div>
-          <input type="text" required placeholder="Nombre del Proyecto" value={projectFormData.name} onChange={e => setProjectFormData({...projectFormData, name: e.target.value})} className="w-full border rounded-lg px-3 py-2" />
-          <input type="text" required placeholder="Cliente" value={projectFormData.client} onChange={e => setProjectFormData({...projectFormData, client: e.target.value})} className="w-full border rounded-lg px-3 py-2" />
-          <input type="text" required placeholder="Ubicación" value={projectFormData.location} onChange={e => setProjectFormData({...projectFormData, location: e.target.value})} className="w-full border rounded-lg px-3 py-2" />
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-xs text-gray-500">Fecha Inicio</label>
-              <input type="date" required value={projectFormData.start_date} onChange={e => setProjectFormData({...projectFormData, start_date: e.target.value})} className="w-full border rounded-lg px-3 py-2" />
-            </div>
-            <div>
-              <label className="text-xs text-gray-500">Fecha Fin</label>
-              <input type="date" required value={projectFormData.end_date} onChange={e => setProjectFormData({...projectFormData, end_date: e.target.value})} className="w-full border rounded-lg px-3 py-2" />
-            </div>
-          </div>
-          <textarea placeholder="Descripción del proyecto..." value={projectFormData.description} onChange={e => setProjectFormData({...projectFormData, description: e.target.value})} className="w-full border rounded-lg px-3 py-2" rows="2"></textarea>
-          
-          <button type="submit" disabled={submitting} className="w-full bg-green-600 text-white py-2 rounded-lg">{submitting ? 'Creando...' : 'Crear Proyecto'}</button>
-        </form>
       </Modal>
 
       <PasswordModal isOpen={showPasswordModal} onClose={() => { setShowPasswordModal(false); setCreatedUserData(null); }} userData={createdUserData} />
@@ -1408,13 +1398,11 @@ const EngineerModule = ({ project }) => {
   );
 };
 
-// ============== CEO MODULE ==============
+// ============== CEO MODULE (CORREGIDO: CÁLCULO DE PRESUPUESTO) ==============
 const CEOModule = () => {
   const [loading, setLoading] = useState(true);
   const [projects, setProjects] = useState([]);
   const [cashFlowData, setCashFlowData] = useState([]);
-  
-  // Aquí usamos estado simple para el modal, NO localStorage
   const [selectedProject, setSelectedProject] = useState(null);
   
   const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
@@ -1435,11 +1423,20 @@ const CEOModule = () => {
 
         if (error) throw error;
 
-        // Process project data
+        // Process project data con la corrección solicitada
         const processedProjects = projectsData.map(project => {
-          const totalBudget = project.partidas?.reduce((sum, p) => 
+          // CORRECCIÓN: Si hay partidas, sumarlas. Si no, usar el presupuesto base del proyecto.
+          let calculatedBudget = parseFloat(project.total_budget) || 0;
+          
+          const sumPartidas = project.partidas?.reduce((sum, p) => 
             sum + ((p.total_budgeted || 0) * (p.unit_price || 0)), 0
-          ) || project.total_budget || 0;
+          ) || 0;
+
+          // Si ya se han creado partidas, el presupuesto real es la suma de ellas.
+          // Si no hay partidas, mantenemos el presupuesto estimado inicial.
+          if (sumPartidas > 0) {
+            calculatedBudget = sumPartidas;
+          }
 
           const executedCost = project.daily_reports?.reduce((sum, r) => 
             sum + (r.total_labor_cost || 0) + (r.total_materials_cost || 0), 0
@@ -1454,7 +1451,7 @@ const CEOModule = () => {
 
           return {
             ...project,
-            totalBudget,
+            totalBudget: calculatedBudget, // Usamos la variable corregida
             executedCost,
             overallProgress: Math.min(overallProgress, 100)
           };
@@ -1829,7 +1826,7 @@ const LogisticsModule = ({ project }) => {
     </div>
   );
 };
-// ============== MAIN APP COMPONENT (VERSION CORREGIDA CON LOGOUT GLOBAL) ==============
+// ============== MAIN APP COMPONENT ==============
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState(null);
@@ -1980,7 +1977,6 @@ export default function App() {
     if (role === 'admin') return <AdminModule currentUser={profile} />;
     if (role === 'ceo') return <CEOModule />;
 
-    // --- CORRECCIÓN AQUÍ: PANTALLA DE SELECCIÓN DE PROYECTO CON BOTÓN SALIR ---
     if (needsProjectSelection(role) && !selectedProject) {
       return (
         <div className="flex flex-col items-center justify-center h-[70vh] text-center p-4">
@@ -2134,7 +2130,6 @@ export default function App() {
              <span className="text-sm text-gray-500 hidden sm:block">
                {new Date().toLocaleDateString('es-PE', { weekday: 'short', day: 'numeric', month: 'short' })}
              </span>
-             {/* --- BOTÓN DE SALIR EN HEADER --- */}
              <button onClick={handleLogout} className="p-2 text-gray-500 hover:bg-red-50 hover:text-red-600 rounded-full transition" title="Cerrar Sesión">
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
              </button>
